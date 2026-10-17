@@ -304,4 +304,79 @@ const base = () => ({ sessions: [{ id: 's1', name: 'Drive A', start: 1000 }], no
   assert.ok(P.backoff(0) === 2000 && P.backoff(20) === 300000);
   ok('sync outbox (dormant): coalesces per note, keeps edits made in flight, capped backoff');
 }
+
+{
+  const db = base(); db.settings.sheetSync = { url: 'https://script.google.com/macros/s/AKfycbX/exec', token: 'secret-123', enabled: true };
+  const b = P.buildBackup(db, [], 1);
+  assert.strictEqual(JSON.stringify(b).includes('secret-123'), false);
+  assert.deepStrictEqual(b.state.settings.sheetSync, { url: 'https://script.google.com/macros/s/AKfycbX/exec', enabled: false });
+  assert.strictEqual(db.settings.sheetSync.token, 'secret-123');
+  ok('JSON backup omits the Sheets token (URL kept, sync off in the file); live settings untouched');
+}
+// ---------- Apps Script endpoint (docs/sheets-sync.gs) run against a mock Apps Script runtime ----------
+{
+  const fs = require('fs'), os = require('os'), path = require('path');
+  const GAS = require('./tools/gas-mock.js');
+  const src = fs.readFileSync(path.join(__dirname, 'docs/sheets-sync.gs'), 'utf8');
+  const tmpGs = path.join(os.tmpdir(), 'dl-sheets-sync-test.gs');
+  fs.writeFileSync(tmpGs, src.replace("'REPLACE-WITH-A-LONG-RANDOM-STRING'", "'test-token-123'"));
+  const T = 'test-token-123';
+  const ev = (id, t, extra, op) => { const n = mk(id, t, extra); return { op: op || 'create', v: n.updatedAt, note: n,
+    row: C.row(n, { gps: true }), session: 'Drive 2026-10-17 11:47', updated: C.isoLocal(new Date(n.updatedAt)) }; };
+  let g = GAS.load(tmpGs);
+  let r = g.get();
+  assert.deepStrictEqual(r.json, { ok: true, app: 'drive-logger-backup', version: 1 }); assert.strictEqual(r.mime, 'application/json');
+  ok('script doGet: JSON health check, no data');
+  assert.strictEqual(GAS.load(path.join(__dirname, 'docs/sheets-sync.gs')).post({ token: 'REPLACE-WITH-A-LONG-RANDOM-STRING', events: [] }).json.error, 'token not set in script');
+  assert.strictEqual(g.post('not json{').json.error, 'bad json');
+  assert.strictEqual(g.post({ token: 'wrong', events: [ev('n1', 1000)] }).json.error, 'unauthorized');
+  assert.strictEqual(g.post({ events: [ev('n1', 1000)] }).json.error, 'unauthorized');
+  assert.strictEqual(g.tab('Notes'), undefined, 'nothing written on auth failure');
+  ok('script doPost: rejects bad JSON, missing/wrong token, and the placeholder token; writes nothing');
+  r = g.post({ token: T, test: true, events: [] });
+  assert.deepStrictEqual(r.json, { ok: true, test: true, tab: 'Notes', rows: 0 });
+  const sh = g.tab('Notes');
+  const HDR = ['Date', 'Time', 'ISO timestamp', 'Type', 'Note', 'Lat', 'Lon', 'Session', 'Note ID', 'Updated', 'Deleted', 'Received'];
+  assert.deepStrictEqual(sh._rows()[0], HDR); assert.strictEqual(sh.getFrozenRows(), 1);
+  assert.deepStrictEqual(Object.keys(sh._fmt).map(Number).sort((a, b) => a - b), [0, 1, 2, 8, 9]);
+  ok('script test ping: creates the Notes tab, 12 headers, frozen row, text format on Date/Time/ISO/ID/Updated');
+  const t0 = new Date(2026, 9, 17, 14, 3, 22).getTime();
+  r = g.post({ token: T, events: [ev('n1', t0, { lat: 42.5012, lon: -83.4447 }), ev('n2', t0 + 5000, { type: 'Intervention', text: 'took over $$$' })] });
+  assert.deepStrictEqual([r.json.ok, r.json.added, r.json.updated], [true, 2, 0]);
+  let rows = sh._rows();
+  assert.strictEqual(rows.length, 3);
+  assert.deepStrictEqual(rows[1].slice(0, 11), [C.localDate(new Date(t0)), C.localTime(new Date(t0)), C.isoLocal(new Date(t0)), 'Log', 'note n1', 42.5012, -83.4447,
+    'Drive 2026-10-17 11:47', 'n1', C.isoLocal(new Date(t0)), '']);
+  assert.ok(rows[1][11] instanceof Date);
+  assert.strictEqual(rows[2][4], 'took over $$$');
+  ok('script upsert: new notes appended in one block, mapped to the export columns + Session/ID/Updated/Received');
+  r = g.post({ token: T, events: [ev('n1', t0, { lat: 42.5012, lon: -83.4447 }), ev('n2', t0 + 5000, { type: 'Intervention', text: 'took over $$$' })] });
+  assert.deepStrictEqual([r.json.added, r.json.updated, sh._rows().length], [0, 2, 3]);
+  ok('script upsert: re-sending the same notes (retry) updates in place, never duplicates');
+  r = g.post({ token: T, events: [ev('n1', t0, { text: 'edited text', updatedAt: t0 + 60000 }, 'edit')] });
+  assert.strictEqual(sh._rows()[1][4], 'edited text');
+  r = g.post({ token: T, events: [ev('n1', t0, { text: 'stale retry', updatedAt: t0 + 1000 }, 'edit')] });
+  assert.deepStrictEqual([r.json.skipped, sh._rows()[1][4]], [1, 'edited text']);
+  ok('script upsert: newer edit wins; an older version arriving late is skipped');
+  g.post({ token: T, events: [ev('n2', t0 + 5000, { type: 'Intervention', text: 'took over $$$', deleted: true, updatedAt: t0 + 90000 }, 'delete')] });
+  assert.strictEqual(sh._rows()[2][10], 'TRUE');
+  g.post({ token: T, events: [ev('n3', t0 + 9000, { text: '=HYPERLINK("http://x","y")' }), ev('n4', t0 + 9500, { text: '-5 mph over limit' })] });
+  rows = sh._rows();
+  assert.strictEqual(rows[3][4], '=HYPERLINK("http://x","y")'); assert.ok(sh._quoted['3,4'] && sh._quoted['4,4']);
+  ok('script: deletes marked Deleted=TRUE (row kept); formula-like note text stored as literal text');
+  const many = Array.from({ length: 120 }, (_, i) => ev('m' + i, t0 + 20000 + i));
+  r = g.post({ token: T, events: many });
+  assert.deepStrictEqual([r.json.added, sh._rows().length], [120, 125]);
+  assert.strictEqual(g.locks.held, 0); assert.ok(g.locks.taken >= 8);
+  ok('script: 120-note batch in one call; the script lock is always released');
+  // Jason's own layout later: reordered columns, an extra column of his own, some headers missing
+  g = GAS.load(tmpGs, { preTab: 'Notes', headers: ['Note ID', 'My comments', 'Type', 'Date', 'Note'] });
+  g.tab('Notes').getRange(2, 1, 1, 5).setValues([['n1', 'keep me', 'Log', 'old', 'old']]);
+  r = g.post({ token: T, events: [ev('n1', t0), ev('n9', t0 + 1)] });
+  rows = g.tab('Notes')._rows();
+  assert.deepStrictEqual(rows[0].slice(0, 6), ['Note ID', 'My comments', 'Type', 'Date', 'Note', 'Time']);
+  assert.deepStrictEqual(rows[1].slice(0, 5), ['n1', 'keep me', 'Log', C.localDate(new Date(t0)), 'note n1']);
+  assert.deepStrictEqual([rows.length, rows[2][0], rows[2][1]], [3, 'n9', '']);
+  ok('script: columns found by header name; custom layout + extra user columns preserved; missing headers appended');
+}
 console.log(`\nAll ${passed} tests passed`);

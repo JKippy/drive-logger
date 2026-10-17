@@ -38,7 +38,7 @@
     if (list && op) { var t = Date.now(); entries = list.map(function (n) { return P.jEntry(op, n, t); }); }
     Store.write(db, list, entries);
     if (entries && journal) journal.push.apply(journal, entries);
-    if (entries && window.DLSync) list.forEach(function (n) { DLSync.enqueue(op, n); });
+    if (entries && window.DLSync) list.forEach(function (n) { DLSync.enqueue(op, n); });   // Sheets backup (no-op when off)
   }
   /** Record a change to one note. */
   function change(n, op) { n.updatedAt = Date.now(); n.updated = n.updatedAt; save(n, op); }
@@ -125,7 +125,7 @@
   // ---- More sheet ----
   var sheetOpen = false;
   function openSheet() {
-    sheetOpen = true; render(); syncSettingsUI();
+    sheetOpen = true; render(); syncSettingsUI(); syncUI();
     Store.readJournal().then(function (j) { journal = P.mergeJournal(j, journal || []); if (sheetOpen) renderDeleted(); });
     var w = $('sheetWrap'); w.hidden = false; void w.offsetWidth; w.classList.add('open');
   }
@@ -749,12 +749,112 @@
         catch (e) { toast('Restore failed: ' + e.message); return; }
         db = r.db; applyDefaults(); journal = r.journal;
         Store.write(db, 'all', null); Store.replaceJournal(journal);
+        if (Sync.status().enabled) Sync.backfill(P.live(db));
         render(); syncSettingsUI();
         toast('Restored: ' + r.stats.added + ' new, ' + r.stats.updated + ' updated. Nothing was overwritten.');
       });
     };
     rd.readAsText(f);
   });
+
+  // ================= Sheets backup (Apps Script web app) =================
+  var Sync = window.DLSync;
+  function syncCfg() { return db.settings.sheetSync || (db.settings.sheetSync = { url: '', token: '', enabled: false }); }
+  Sync.setDescribe(function (n) { var s = db.sessions.filter(function (x) { return x.id === n.session; })[0]; return { session: s ? s.name : '' }; });
+  function applySync(backfillAll) {
+    Sync.configure(syncCfg());
+    if (backfillAll && Sync.status().enabled) return Sync.backfill(P.live(db));
+    return 0;
+  }
+  function shortUrl(u) {
+    var m = /^https?:\/\/([^\/]+)\/.*\/s\/([\w-]+)\/exec/.exec(u || '');
+    return m ? m[1] + '/…/' + m[2].slice(0, 6) + '…' + m[2].slice(-4) + '/exec' : u;
+  }
+  /** Status-row glyph: grey cloud = all synced, amber cloud + count = waiting, red cloud + "!" = failing. */
+  function renderSyncInd(x) {
+    var el = $('syncInd'), t = $('syncText');
+    if (!x.enabled) { el.hidden = true; return; }
+    el.hidden = false;
+    if (x.lastError && x.pending && !/^Offline/.test(x.lastError)) { el.className = 'st sync-err'; t.textContent = '!'; el.title = 'Sheets backup error: ' + x.lastError; }
+    else if (x.pending) { el.className = 'st sync-pending'; t.textContent = String(x.pending); el.title = x.pending + ' pending for Google Sheets'; }
+    else { el.className = 'st sync-ok'; t.textContent = ''; el.title = 'Synced to Google Sheets'; }
+    el.setAttribute('data-state', el.className.replace('st sync-', ''));
+  }
+  function renderSyncStatus(x) {
+    x = x || Sync.status();
+    var c = syncCfg(), parts = [];
+    if (!x.enabled) parts.push(c.url && c.token ? 'Off' : 'Off: add the /exec URL and token, or open a pairing link');
+    else {
+      parts.push(x.lastSync ? 'Last synced ' + C.localTime(new Date(x.lastSync)) : 'Not synced yet');
+      parts.push(x.pending + ' pending');
+    }
+    $('syncStatus').textContent = parts.join(' · ');
+    $('syncErr').textContent = x.lastError ? 'Last error' + (x.lastErrorAt ? ' ' + C.localTime(new Date(x.lastErrorAt)) : '') + ': ' + x.lastError : '';
+  }
+  Sync.onStatus(function (x) { renderSyncInd(x); if (sheetOpen) renderSyncStatus(x); });
+  function syncUI() {
+    var c = syncCfg();
+    $('syncChk').checked = !!c.enabled; $('syncUrl').value = c.url || ''; $('syncToken').value = c.token || '';
+    renderSyncStatus();
+  }
+  function fieldsCfg() { return { url: $('syncUrl').value.trim(), token: $('syncToken').value.trim() }; }
+  function saveSyncFields() {
+    var c = syncCfg(), f = fieldsCfg(), pair = Sync.parsePairing(f.url);
+    if (pair) { f = pair; $('syncUrl').value = f.url; $('syncToken').value = f.token; }
+    var changed = f.url !== c.url || f.token !== c.token;
+    c.url = f.url; c.token = f.token;
+    if (c.enabled && !(Sync.validUrl(c.url) && c.token)) { c.enabled = false; $('syncChk').checked = false; toast('Sheets backup off: URL or token missing'); }
+    save(); if (changed) applySync(c.enabled); renderSyncStatus();
+  }
+  $('syncUrl').addEventListener('change', saveSyncFields);
+  $('syncToken').addEventListener('change', saveSyncFields);
+  $('syncChk').addEventListener('change', function () {
+    var c = syncCfg(), f = fieldsCfg();
+    if (this.checked) {
+      var pair = Sync.parsePairing(f.url); if (pair) f = pair;
+      if (!Sync.validUrl(f.url)) { this.checked = false; toast('Enter the Apps Script web app URL ending in /exec'); return; }
+      if (!f.token) { this.checked = false; toast('Enter the token from the script'); return; }
+      c.url = f.url; c.token = f.token; c.enabled = true; save();
+      var k = applySync(true); toast(k ? 'Sheets backup on: sending ' + k + ' note' + (k === 1 ? '' : 's') : 'Sheets backup on');
+    } else { c.enabled = false; save(); applySync(false); toast('Sheets backup off'); }
+    syncUI();
+  });
+  $('syncTest').addEventListener('click', function () {
+    var f = fieldsCfg(), pair = Sync.parsePairing(f.url); if (pair) f = pair;
+    $('syncStatus').textContent = 'Testing…';
+    Sync.test(f).then(function (j) { renderSyncStatus(); $('syncStatus').textContent = 'Test OK: sheet tab “' + j.tab + '” has ' + j.rows + ' row' + (j.rows === 1 ? '' : 's') + ' · ' + $('syncStatus').textContent; toast('Google Sheet reached ✓'); },
+      function (e) { renderSyncStatus(); toast('Test failed: ' + e.message); });
+  });
+  $('syncNow').addEventListener('click', function () { if (!Sync.status().enabled) return toast('Turn Sheets backup on first'); Sync.flush(); });
+
+  // ---- pairing link: …/drive-logger/#sync=<url-encoded /exec URL>&token=<token> ----
+  var pendingPair = null;
+  function takePairingHash() {
+    if (!/[#&]sync=/.test(location.hash)) return;
+    var pair = Sync.parsePairing(location.hash);
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) {}   // never leave the token in the URL
+    if (!pair) return toast('Pairing link incomplete');
+    if (!Sync.validUrl(pair.url)) return toast('Pairing link ignored: not an Apps Script /exec URL');
+    pendingPair = pair;
+    if (bootDone) showPair();
+  }
+  function showPair() {
+    if (!pendingPair) return;
+    $('pairUrl').textContent = shortUrl(pendingPair.url);
+    $('pairCount').textContent = P.live(db).length + ' note' + (P.live(db).length === 1 ? '' : 's') + ' on this device will be sent, then every new note and edit.';
+    $('pair').hidden = false;
+  }
+  $('pairOk').addEventListener('click', function () {
+    var c = syncCfg(); c.url = pendingPair.url; c.token = pendingPair.token; c.enabled = true; pendingPair = null;
+    $('pair').hidden = true; save();
+    var k = applySync(true);
+    toast(k ? 'Sheets backup paired ✓ Sending ' + k + ' note' + (k === 1 ? '' : 's') : 'Sheets backup paired ✓');
+    feed('☁ Sheets backup on', 'info');
+    if (sheetOpen) syncUI();
+  });
+  $('pairCancel').addEventListener('click', function () { pendingPair = null; $('pair').hidden = true; toast('Pairing cancelled'); });
+  window.addEventListener('hashchange', takePairingHash);
+  takePairingHash();
 
   // ---- boot: merge IndexedDB with localStorage, recover crashed drafts, resync both stores ----
   var bootDone = false;
@@ -778,6 +878,9 @@
       Store.write(db, 'all', rec.map(function (n) { return P.jEntry('recover', n); }));   // resync both stores
       Store.writeDrafts(currentDrafts(), true);
       bootDone = true;
+      applySync(false);
+      rec.forEach(function (n) { Sync.enqueue('recover', n); });
+      showPair();
       Store.readJournal().then(function (j) { journal = P.mergeJournal(j, journal || []); });   // heals the IndexedDB journal from the mirror
       render(); syncSettingsUI();
       if (rec.length) { highlightNote(rec[rec.length - 1].id); feed('↺ ' + msgs[msgs.length - 1], 'warn'); }
@@ -795,6 +898,6 @@
   boot();
   checkPersistence(true);
   Store.detectPrivate().then(function (v) { isPrivate = v; renderWarn(); });
-  if (db.settings.sheetSync && window.DLSync) DLSync.configure(db.settings.sheetSync);   // dormant until configured
+  applySync(false);
   window.__dl = { exec: exec, db: function () { return db; }, ready: function () { return bootDone; }, store: Store };   // debugging/test hook
 })();

@@ -80,20 +80,43 @@ Safari limits to know about:
   (the Home Screen app is recommended) and use a JSON backup to move between them.
 - Two stores on the same phone don't protect against losing the phone or iOS clearing website data. Export after each drive.
 
-### Backing up to Google Sheets (designed, not enabled)
-The client already sends every change through a small outbox (`DLSync` in `store.js`). It does nothing until an endpoint is
-configured, and there's no UI for that yet. The planned server is a Google Apps Script web app bound to a Sheet you own:
-[`docs/sheets-sync.gs`](docs/sheets-sync.gs). It upserts each note by id, so retries never duplicate rows.
-- The app POSTs `Content-Type: text/plain` with a JSON body. Apps Script can't answer a CORS preflight (there is no
-  `doOptions`), so `application/json` fails. text/plain is a "simple request": there's no preflight, the `/exec` 302
-  redirect to `script.googleusercontent.com` is followed, and the JSON reply is readable. That lets the app confirm each batch
-  instead of firing blind with `no-cors`.
-- Failed or offline sends stay in the outbox (localStorage) and retry with backoff, on reconnect, and when the app
-  returns to the foreground.
-- Security: the web app runs as the Sheet owner with access "Anyone". Whoever holds the URL can call it, so the script also
-  checks a long random token that the app sends in the POST body rather than the URL, which keeps it out of logs and history.
-  Rotate it by changing `TOKEN` and redeploying. Note text goes to Google under the owner's account; check that this is
-  allowed for test-drive data.
+### Backing up to Google Sheets
+Every note change (create, edit, priority, retype, delete, restore, recover) is copied automatically to a Google Sheet you own,
+through a small Apps Script web app bound to that sheet ([`docs/sheets-sync.gs`](docs/sheets-sync.gs)).
+
+**Set up (once):**
+1. In the backup spreadsheet, open **Extensions › Apps Script**. Replace the code with `docs/sheets-sync.gs`, and set `TOKEN`
+   to a long random string.
+2. **Deploy › New deployment › Web app**, with *Execute as: Me* and *Who has access: Anyone*. Deploy, authorize, and copy the
+   URL ending in `/exec`.
+3. On the phone, open the **pairing link** `https://jkippy.github.io/drive-logger/#sync=<URL-encoded /exec URL>&token=<TOKEN>`
+   and tap **Turn on backup**. You can also enter the URL and token under **More › Sheets backup** and switch it on (pasting a
+   pairing link into the URL field fills in both). Existing notes are sent right away.
+   The Home Screen app has its own storage, so if you use it, paste the pairing link into its URL field there.
+
+**How it behaves**
+- Changes go into an outbox on the phone and are sent in batches. Each row is updated in place by **Note ID**, so retries never
+  create duplicates, and an older version never overwrites a newer one. Deleted notes stay in the sheet with `Deleted = TRUE`.
+- Failed or offline sends stay queued and retry with backoff, when the connection returns, and when the app comes back to the
+  foreground. The queue survives reloads.
+- The status row shows a small cloud: grey when synced, amber with a count while notes are waiting, and red with "!" on errors.
+  More › Sheets backup shows *Last synced HH:MM:SS · N pending* and the last error. **Send test** checks the URL, access and
+  token; **Sync now** retries immediately.
+- **Columns** (in one `COLUMNS` table in the script): Date, Time, ISO timestamp, Type, Note, Lat, Lon (the export columns),
+  then Session, Note ID, Updated, Deleted, Received. Columns are matched by header name, so you can reorder them or add your
+  own; missing headers are appended.
+
+**Why text/plain:** Apps Script can't answer a CORS preflight (there is no `doOptions`), so the app POSTs a `text/plain` JSON
+body. That's a "simple request": the `/exec` 302 (which carries `Access-Control-Allow-Origin: *`) is followed to
+`script.googleusercontent.com`, and the JSON reply can be read, so each batch is confirmed. Google's error pages have no CORS
+header, so a wrong URL, access not set to "Anyone", or a server error all show as "Couldn't reach the script".
+
+**Security:** the web app runs as the sheet owner with access "Anyone", so the URL alone can reach it. Every POST must carry the
+token, which goes in the request body, never the URL. The pairing link puts the token in the `#hash`, which browsers never send
+to a server, and the app removes it from the address bar immediately. A pairing link only pairs to `script.google.com/…/exec`
+URLs, and only after you confirm. JSON backups don't include the token. `@OnlyCurrentDoc` limits the script to the one sheet it's
+bound to. Rotate the token by changing `TOKEN`, redeploying (*Manage deployments › Edit › New version*) and re-pairing. Note text
+is stored in your Google account, so check that's allowed for test-drive data.
 
 ## Export format
 Tab-separated (Copy) or CSV (Download / Share). Header row optional for Copy, always included in the CSV.
@@ -127,8 +150,10 @@ accuracy), and **Now** above the notes is the device clock, for comparison with 
 index.html  style.css  app.js   UI, speech recognition, commands, GPS, export, nudge, backup UI
 core.js                         pure logic: keyword parsing, command grammar, priority, corrections, TSV/CSV
 persist.js                      pure logic: two-store merge, drafts/recovery, journal, backup/restore, export tracking
-store.js                        localStorage + IndexedDB adapter, persist(), Private Browsing check, dormant Sheets outbox
-docs/sheets-sync.gs             sample Apps Script endpoint (not deployed)
+store.js                        localStorage + IndexedDB adapter, persist(), Private Browsing check, Sheets backup client
+docs/sheets-sync.gs             Apps Script endpoint (token placeholder); `node tools/make-ready-script.js` builds the
+                                git-ignored docs/sheets-sync-ready.gs with the real token
+tools/gas-mock.js, fake-gas.js  mock Apps Script runtime + fake endpoint (mimics Google's 302 → googleusercontent flow)
 sw.js  manifest.json  icons/    PWA (network-first service worker)
 test.js                         unit tests: node test.js
 tools/*.js                      headless Chromium flows (fake speech recognizer)
@@ -137,7 +162,8 @@ tools/*.js                      headless Chromium flows (fake speech recognizer)
 - Serve locally: `python3 -m http.server 8787` → http://127.0.0.1:8787/
 - Headless flows need `playwright-core` and Chrome:
   `npm i playwright-core` then `NODE_PATH=./node_modules node tools/cmdtest.js` (also `gpstest.js`, `accuracytest.js`,
-  `timestamptest.js`, `durabilitytest.js`, `shot.js`). `durabilitytest.js` crashes the page and SIGKILLs the browser mid-note,
+  `timestamptest.js`, `durabilitytest.js`, `synctest.js`, `shot.js`). `synctest.js` runs the real script behind the fake endpoint
+  (local http only). `durabilitytest.js` crashes the page and SIGKILLs the browser mid-note,
   wipes each store in turn, and round-trips a backup. Set `BASE_URL` to test another copy, e.g.
   `BASE_URL=https://jkippy.github.io/drive-logger/ node tools/smoketest.js`.
 - Bump `CACHE` in `sw.js` on each release so installed copies refresh.

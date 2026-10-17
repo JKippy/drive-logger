@@ -207,6 +207,16 @@ body.night #night{opacity:.5}
 .st-val{color:var(--fg2);font-size:15px;text-align:right}
 .st-val.warn{color:var(--amber)} .st-val.bad{color:var(--red);font-weight:700}
 .export-info{margin-top:8px}
+.fields{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.fields input{min-height:46px;border-radius:12px;background:var(--s2);border:1px solid var(--line);padding:0 14px;font-size:16px;outline:none;min-width:0}
+.fields input:focus{border-color:var(--accent)}
+.fine.err{color:var(--red)}
+.nudge-sub b{color:var(--fg);font-weight:600;word-break:break-all}
+#syncInd{gap:3px} #syncInd .cloud{width:17px;height:17px;stroke-width:2}
+.sync-ok{color:var(--fg3)} .sync-pending{color:var(--amber)} .sync-err{color:var(--red)}
+#syncText:empty{display:none}
+@media (max-width:400px) and (orientation:portrait){.st-right{gap:12px}}
+#syncInd[hidden]{display:none}
 .stack{display:flex;flex-direction:column;gap:8px;margin-top:10px}
 .export-info.pending{color:var(--amber)}
 .nudge{position:fixed;inset:0;z-index:150;display:grid;place-items:center}

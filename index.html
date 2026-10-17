@@ -22,6 +22,7 @@
   <header class="statusbar">
     <div id="status" class="st st-idle" role="status" aria-live="polite"><i class="dot"></i><span id="statusText">Ready</span></div>
     <div class="st-right">
+      <div id="syncInd" class="st sync-ok" hidden aria-label="Sheets backup"><svg class="cloud" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18.5h10.5a4 4 0 0 0 .6-7.95A6 6 0 0 0 6.6 9.1 4.75 4.75 0 0 0 7 18.5z"/></svg><span id="syncText"></span></div>
       <div id="gpsStatus" class="st gps-off" title="Location accuracy"><i class="dot"></i><span id="gpsText">GPS off</span></div>
       <div class="st elapsed" title="Time since this drive session started"><span class="k">Drive</span><span id="elapsed">0:00:00</span></div>
     </div>
@@ -111,6 +112,23 @@
     </div>
 
     <div class="group">
+      <div class="group-title">Sheets backup <span class="sub">each note to your Google Sheet</span></div>
+      <div class="list">
+        <label class="setting"><span>Back up to Google Sheets</span><input type="checkbox" id="syncChk" class="switch"></label>
+      </div>
+      <div class="fields">
+        <input id="syncUrl" type="url" inputmode="url" placeholder="Web app URL (…/exec) or pairing link" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Apps Script web app URL">
+        <input id="syncToken" type="password" placeholder="Token" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Token">
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button id="syncTest" class="pill grow">Send test</button>
+        <button id="syncNow" class="pill grow">Sync now</button>
+      </div>
+      <div id="syncStatus" class="fine"></div>
+      <div id="syncErr" class="fine err"></div>
+    </div>
+
+    <div class="group">
       <div class="group-title">Settings</div>
       <div class="list">
       <div class="setting"><span>Replies</span>
@@ -189,6 +207,17 @@
       <button id="nudgeShare" class="pill">Share</button>
     </div>
     <button id="nudgeLater" class="linkbtn nudge-later">Not now</button>
+  </div>
+</div>
+
+<!-- Sheets pairing confirmation -->
+<div id="pair" class="nudge" hidden>
+  <div class="scrim"></div>
+  <div class="nudge-card" role="dialog" aria-labelledby="pairTitle">
+    <div id="pairTitle" class="nudge-title">Back up to Google Sheets?</div>
+    <div class="nudge-sub">Notes will be sent to <b id="pairUrl"></b>. <span id="pairCount"></span></div>
+    <div class="nudge-acts"><button id="pairOk" class="pill accent">Turn on backup</button></div>
+    <button id="pairCancel" class="linkbtn nudge-later">Cancel</button>
   </div>
 </div>
 

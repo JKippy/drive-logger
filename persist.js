@@ -124,10 +124,16 @@
   }
 
   // ---------- backup ----------
+  /** Settings for a backup file: the Sheets endpoint is kept, its secret token is not. */
+  function backupSettings(st) {
+    var o = clone(st || {});
+    if (o.sheetSync) { delete o.sheetSync.token; o.sheetSync.enabled = false; }
+    return o;
+  }
   function buildBackup(db, journal, now) {
     var d = new Date(now || Date.now());
     return { app: BACKUP_APP, format: BACKUP_FORMAT, exportedAt: d.getTime(), exportedAtISO: d.toISOString(),
-      state: { sessions: db.sessions, notes: db.notes, settings: db.settings, current: db.current, savedAt: db.savedAt },
+      state: { sessions: db.sessions, notes: db.notes, settings: backupSettings(db.settings), current: db.current, savedAt: db.savedAt },
       journal: journal || [] };
   }
   /** Parse a backup file. Also accepts a bare saved state ({sessions, notes}). Throws with a readable message. */

@@ -4,3 +4,4 @@ node_modules/
 PUBLIC_URL.txt
 start.sh
 .DS_Store
+docs/sheets-sync-ready.gs
