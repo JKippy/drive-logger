@@ -51,6 +51,50 @@ can't transcribe itself.
 - **Corrections** (More sheet): editable *heard → written* pairs applied to note text, seeded with AV terms
   (way mo → Waymo, lie dar → lidar, phantom breaking → phantom braking, zooks → Zoox, …).
 
+## Data safety (crash-proofing)
+Notes live only on the phone, so the app is built so a Safari crash, a killed tab or a wiped store doesn't lose them:
+
+- **Two stores, written on every change.** Each create/edit/delete/priority change is written right away to
+  **localStorage** (synchronously) **and IndexedDB** (a strict-durability transaction). On launch both are read and merged by
+  note id; the newest `updatedAt` wins. Deletes are kept as tombstones so a stale store can't bring a deleted note back.
+  If one store is wiped, corrupted or evicted, the other refills it.
+- **Drafts.** The moment a keyword is heard, the in-progress note (with its keyword-time timestamp and GPS fix) is saved
+  as a draft in both stores and updated as you keep talking. If the page dies before the note is final, the next launch
+  restores it as a note ending in **“(recovered)”**.
+- **Journal.** Every change event (create, edit, delete, priority, retype, restore, recover) is appended to a local journal
+  (all events in IndexedDB, the newest 500 also in localStorage). **More › Recently deleted** lists deleted notes with a
+  Restore button, and “bring that back” still undoes the last delete.
+- **Backup / restore.** **More › Export full backup (JSON)** saves every note (including deleted ones), sessions, settings and
+  the journal. **Restore from backup…** *merges*: missing notes are added and newer edits win. Nothing is overwritten or deleted,
+  and restoring the same file twice changes nothing.
+- **End-of-drive nudge.** Tapping **Stop**, or **New session**, while the session has notes that were never exported shows
+  *“N notes not exported yet · Copy / Download / Share”*. The More sheet shows “N notes not exported” or the last export time.
+- **Warnings.** A banner appears if a store fails (quota, blocked) or if the app detects **Private Browsing**, which erases
+  everything when the tab closes. **More › Storage & backup** shows both stores' status, whether storage is *persistent*
+  (`navigator.storage.persist()`), and whether you're in a browser tab or the Home Screen app.
+
+Safari limits to know about:
+- In a regular Safari tab, Safari deletes all of a site's script-written storage (localStorage **and** IndexedDB) after
+  7 days of browser use without visiting the site. **Home Screen web apps are exempt.**
+- The Home Screen app and Safari tabs keep **separate** storage. Notes taken in one don't appear in the other, so pick one
+  (the Home Screen app is recommended) and use a JSON backup to move between them.
+- Two stores on the same phone don't protect against losing the phone or iOS clearing website data. Export after each drive.
+
+### Backing up to Google Sheets (designed, not enabled)
+The client already sends every change through a small outbox (`DLSync` in `store.js`). It does nothing until an endpoint is
+configured, and there's no UI for that yet. The planned server is a Google Apps Script web app bound to a Sheet you own:
+[`docs/sheets-sync.gs`](docs/sheets-sync.gs). It upserts each note by id, so retries never duplicate rows.
+- The app POSTs `Content-Type: text/plain` with a JSON body. Apps Script can't answer a CORS preflight (there is no
+  `doOptions`), so `application/json` fails. text/plain is a "simple request": there's no preflight, the `/exec` 302
+  redirect to `script.googleusercontent.com` is followed, and the JSON reply is readable. That lets the app confirm each batch
+  instead of firing blind with `no-cors`.
+- Failed or offline sends stay in the outbox (localStorage) and retry with backoff, on reconnect, and when the app
+  returns to the foreground.
+- Security: the web app runs as the Sheet owner with access "Anyone". Whoever holds the URL can call it, so the script also
+  checks a long random token that the app sends in the POST body rather than the URL, which keeps it out of logs and history.
+  Rotate it by changing `TOKEN` and redeploying. Note text goes to Google under the owner's account; check that this is
+  allowed for test-drive data.
+
 ## Export format
 Tab-separated (Copy) or CSV (Download / Share). Header row optional for Copy, always included in the CSV.
 
@@ -76,12 +120,15 @@ accuracy), and **Now** above the notes is the device clock, for comparison with 
 - Needs **Siri & Dictation** enabled (Settings › General › Keyboard › Enable Dictation) and usually a network connection.
 - Turn off Silent mode to hear spoken replies. Web apps can't vibrate on iPhone.
 - If listening misbehaves in the Home Screen app, use it in a regular Safari tab.
-- Notes are stored only on the phone (localStorage) and are tied to the site address, so export after each drive.
+- Notes are stored only on the phone (localStorage + IndexedDB) and are tied to the site address, so export after each drive. See *Data safety*.
 
 ## Development
 ```
-index.html  style.css  app.js   UI, speech recognition, commands, GPS, export
+index.html  style.css  app.js   UI, speech recognition, commands, GPS, export, nudge, backup UI
 core.js                         pure logic: keyword parsing, command grammar, priority, corrections, TSV/CSV
+persist.js                      pure logic: two-store merge, drafts/recovery, journal, backup/restore, export tracking
+store.js                        localStorage + IndexedDB adapter, persist(), Private Browsing check, dormant Sheets outbox
+docs/sheets-sync.gs             sample Apps Script endpoint (not deployed)
 sw.js  manifest.json  icons/    PWA (network-first service worker)
 test.js                         unit tests: node test.js
 tools/*.js                      headless Chromium flows (fake speech recognizer)
@@ -90,7 +137,8 @@ tools/*.js                      headless Chromium flows (fake speech recognizer)
 - Serve locally: `python3 -m http.server 8787` → http://127.0.0.1:8787/
 - Headless flows need `playwright-core` and Chrome:
   `npm i playwright-core` then `NODE_PATH=./node_modules node tools/cmdtest.js` (also `gpstest.js`, `accuracytest.js`,
-  `timestamptest.js`, `shot.js`). Set `BASE_URL` to test another copy, e.g.
+  `timestamptest.js`, `durabilitytest.js`, `shot.js`). `durabilitytest.js` crashes the page and SIGKILLs the browser mid-note,
+  wipes each store in turn, and round-trips a backup. Set `BASE_URL` to test another copy, e.g.
   `BASE_URL=https://jkippy.github.io/drive-logger/ node tools/smoketest.js`.
 - Bump `CACHE` in `sw.js` on each release so installed copies refresh.
 

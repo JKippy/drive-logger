@@ -179,4 +179,129 @@ assert.deepStrictEqual(edt.slice(0, 3), ['2026-10-17', '14:03:22', '2026-10-17T1
 assert.deepStrictEqual(est.slice(0, 3), ['2027-01-15', '09:00:00', '2027-01-15T09:00:00-05:00']);
 assert.deepStrictEqual(dstEdge.slice(0, 3), ['2026-11-01', '01:30:00', '2026-11-01T01:30:00-04:00']);   // 05:30Z, before the 06:00Z fall-back
 ok('ISO timestamps carry the correct America/Detroit offset (EDT -04:00, EST -05:00, DST edge)');
+
+// ---------- persistence (persist.js): dual-store merge, drafts, journal, backup, export tracking ----------
+const P = require('./persist.js');
+const mk = (id, t, extra) => Object.assign({ id, session: 's1', ts: t, type: 'Log', text: 'note ' + id, created: t, updatedAt: t }, extra || {});
+const base = () => ({ sessions: [{ id: 's1', name: 'Drive A', start: 1000 }], notes: [], settings: { gps: true }, current: 's1', view: 's1', savedAt: 0 });
+{
+  const a = base(), b = base();
+  a.notes = [mk('n1', 1100), mk('n2', 1200, { text: 'old text', updatedAt: 1200 })];
+  b.notes = [mk('n2', 1200, { text: 'new text', updatedAt: 1500 }), mk('n3', 1300)];
+  const m = P.merge(a, b, 'newest');
+  assert.deepStrictEqual(m.db.notes.map(n => n.id), ['n1', 'n2', 'n3']);
+  assert.strictEqual(m.db.notes[1].text, 'new text');
+  assert.deepStrictEqual([m.stats.added, m.stats.updated], [1, 1]);
+  ok('merge: union by note id, newest updatedAt wins');
+  const back = P.merge(b, a, 'newest');
+  assert.strictEqual(back.db.notes.find(n => n.id === 'n2').text, 'new text');
+  ok('merge is order-independent for note versions');
+}
+{
+  const a = base(), b = base();
+  a.notes = [mk('n1', 1100, { deleted: true, deletedAt: 2000, updatedAt: 2000 })];
+  b.notes = [mk('n1', 1100)];                              // stale store still has it live
+  assert.strictEqual(P.merge(a, b).db.notes[0].deleted, true);
+  assert.strictEqual(P.merge(b, a).db.notes[0].deleted, true);
+  assert.strictEqual(P.live(P.merge(b, a).db).length, 0);
+  ok('merge: delete tombstones win over stale live copies (no resurrection)');
+}
+{
+  assert.strictEqual(P.merge(null, null).db, null);
+  const b = base(); b.notes = [mk('n1', 1)];
+  assert.strictEqual(P.merge(null, b).db.notes.length, 1);
+  assert.strictEqual(P.merge(b, { garbage: 1 }).db.notes.length, 1);
+  ok('merge: one store empty or corrupt → the other store is used as-is');
+}
+{
+  const a = base(); a.savedAt = 10; a.settings = { gps: false }; a.sessions[0].exportedAt = 500;
+  const b = base(); b.savedAt = 20; b.settings = { gps: true }; b.sessions[0].exportedAt = 900;
+  b.sessions.push({ id: 's2', name: 'Drive B', start: 5000 }); b.current = 's2';
+  const m = P.merge(a, b, 'newest');
+  assert.deepStrictEqual(m.db.sessions.map(s => s.id), ['s1', 's2']);
+  assert.strictEqual(m.db.settings.gps, true); assert.strictEqual(m.db.current, 's2');
+  assert.strictEqual(m.db.sessions[0].exportedAt, 900);
+  assert.strictEqual(P.merge(a, b, 'a').db.settings.gps, false);
+  ok('merge: sessions union, exportedAt = max, settings from newer (or preferred) store');
+}
+{
+  const d = P.normalize({ sessions: [], notes: [mk('n1', 7000, { session: 'lost' })] });
+  assert.deepStrictEqual(d.sessions.map(s => [s.id, s.synthetic]), [['lost', true]]);
+  const real = { sessions: [{ id: 'lost', name: 'Drive real', start: 6000 }], notes: [] };
+  assert.strictEqual(P.merge(d, real).db.sessions[0].name, 'Drive real');
+  ok('notes whose session record is missing get a placeholder session, replaced by the real one on merge');
+}
+{
+  const d = P.normalize({ sessions: [{ id: 's1' }], notes: [mk('n1', 1)], trash: [mk('t1', 2, { updated: 3 })] });
+  assert.strictEqual(d.trash, undefined);
+  assert.deepStrictEqual(d.notes.map(n => [n.id, !!n.deleted]), [['n1', false], ['t1', true]]);
+  const legacy = P.normalize({ sessions: [], notes: [{ id: 'x', ts: 5, created: 6, updated: 9 }] });
+  assert.strictEqual(legacy.notes[0].updatedAt, 9);
+  ok('normalize: v1–v5 state migrates (updatedAt from updated/created/ts; old trash → tombstones)');
+}
+{
+  const db = base(); db.notes = [mk('n1', 1100)];
+  const drafts = [
+    { key: P.draftKey(5000, 'Intervention'), session: 's1', ts: 5000, type: 'Intervention', text: 'took over at the', lat: 42.5, lon: -83.4, acc: 6, updatedAt: 5600 },
+    { key: P.draftKey(1100, 'Log'), session: 's1', ts: 1100, type: 'Log', text: 'note n1', updatedAt: 1150 },      // already saved
+    { key: P.draftKey(6000, 'Log'), session: 'gone', ts: 6000, type: 'Log', text: '', updatedAt: 6000 }];
+  const rec = P.recoverDrafts(db, drafts, 9999);
+  assert.strictEqual(rec.length, 2);
+  assert.strictEqual(rec[0].text, 'took over at the (recovered)');
+  assert.deepStrictEqual([rec[0].ts, rec[0].type, rec[0].lat, rec[0].lon, rec[0].recovered], [5000, 'Intervention', 42.5, -83.4, true]);
+  assert.strictEqual(rec[1].text, '(recovered)'); assert.strictEqual(rec[1].session, 's1');
+  assert.strictEqual(P.recoverDrafts(db, drafts, 10000).length, 0);
+  ok('drafts: recovered as "(recovered)" notes with keyword-time timestamp + GPS; saved notes and repeats skipped');
+  const md = P.mergeDrafts([{ key: 'k', text: 'a', updatedAt: 1 }], [{ key: 'k', text: 'ab', updatedAt: 2 }, { key: 'j', updatedAt: 1 }]);
+  assert.deepStrictEqual(md.map(d => d.key + d.text), ['kab', 'jundefined']);
+  ok('drafts from both stores merge by key, newest wins');
+}
+{
+  const db = base(); const n1 = mk('n1', 1100), n2 = mk('n2', 1200);
+  db.notes = [n1, Object.assign({}, n2, { deleted: true, deletedAt: 3000 })];
+  const j = [P.jEntry('create', n1, 1100), P.jEntry('delete', mk('gone', 900), 2500), P.jEntry('delete', n2, 3000)];
+  const rd = P.recentlyDeleted(db, j);
+  assert.deepStrictEqual(rd.map(n => n.id), ['n2', 'gone']);
+  assert.strictEqual(rd[1].fromJournal, true);
+  assert.strictEqual(P.mergeJournal(j, j.slice(1)).length, 3);
+  ok('recently deleted: tombstones + journal-only deletions, newest first; journal merge dedupes');
+}
+{
+  const db = base(); db.notes = [mk('n1', 1100), mk('n2', 1200, { text: 'edited later', updatedAt: 4000 })];
+  const j = [P.jEntry('create', db.notes[0], 1100)];
+  const text = JSON.stringify(P.buildBackup(db, j, Date.UTC(2026, 9, 17, 15, 0)));
+  const fresh = base(); fresh.settings = { gps: false }; fresh.notes = [mk('n2', 1200, { text: 'stale', updatedAt: 1200 }), mk('n9', 9000)];
+  const r = P.restore(fresh, text, []);
+  assert.deepStrictEqual(r.db.notes.map(n => n.id).sort(), ['n1', 'n2', 'n9']);
+  assert.strictEqual(r.db.notes.find(n => n.id === 'n2').text, 'edited later');
+  assert.strictEqual(r.db.settings.gps, false);            // local settings kept
+  assert.deepStrictEqual([r.stats.added, r.stats.updated, r.journal.length], [1, 1, 1]);
+  const again = P.restore(r.db, text, r.journal);
+  assert.deepStrictEqual([again.stats.added, again.stats.updated, again.journal.length], [0, 0, 1]);
+  ok('backup → restore round-trip merges (adds missing, newer wins, keeps local settings) and is idempotent');
+  assert.throws(() => P.parseBackup('nope'), /Not a JSON file/);
+  assert.throws(() => P.parseBackup('{"a":1}'), /Not a Drive Logger backup/);
+  assert.strictEqual(P.parseBackup(JSON.stringify(db)).state.notes.length, 2);
+  ok('backup parser rejects junk and accepts a raw saved state');
+}
+{
+  const db = base(); db.notes = [mk('n1', 1100), mk('n2', 1200), mk('n3', 1300, { deleted: true })];
+  assert.strictEqual(P.unexported(db, 's1'), 2);
+  P.markExported(db, ['s1'], 1250);
+  assert.strictEqual(P.unexported(db, 's1'), 0);
+  db.notes[1].updatedAt = 1400;
+  assert.strictEqual(P.unexported(db, 's1'), 1);
+  ok('export tracking: notes created/edited after the last export count as not exported');
+}
+{
+  let box = P.outboxAdd([], 'create', mk('n1', 1));
+  box = P.outboxAdd(box, 'edit', mk('n1', 1, { updatedAt: 5 }));
+  assert.strictEqual(box.length, 1); assert.strictEqual(box[0].op, 'edit');
+  const inflight = box.slice();
+  box = P.outboxAdd(box, 'edit', mk('n1', 1, { updatedAt: 9 }));
+  assert.strictEqual(P.outboxAck(box, inflight).length, 1);   // changed while in flight → kept
+  assert.strictEqual(P.outboxAck(box, box).length, 0);
+  assert.ok(P.backoff(0) === 2000 && P.backoff(20) === 300000);
+  ok('sync outbox (dormant): coalesces per note, keeps edits made in flight, capped backoff');
+}
 console.log(`\nAll ${passed} tests passed`);

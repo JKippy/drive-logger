@@ -199,4 +199,24 @@ body.night #night{opacity:.5}
 .cheat td{padding:9px 4px 9px 0;border-top:1px solid var(--line);line-height:1.4}
 .cheat tr:first-child td{border-top:0}
 
+/* ---------------- durability ---------------- */
+.warnbar{flex:0 0 auto;border-radius:12px;padding:10px 14px;font-size:15px;font-weight:600;line-height:1.3;background:var(--s2);border:1px solid var(--line2);color:var(--fg)}
+.warnbar.bad{background:var(--red);border-color:var(--red);color:#fff}
+.warnbar.warn{border-color:var(--amber);color:var(--amber)}
+.warnbar[hidden]{display:none}
+.st-val{color:var(--fg2);font-size:15px;text-align:right}
+.st-val.warn{color:var(--amber)} .st-val.bad{color:var(--red);font-weight:700}
+.export-info{margin-top:8px}
+.stack{display:flex;flex-direction:column;gap:8px;margin-top:10px}
+.export-info.pending{color:var(--amber)}
+.nudge{position:fixed;inset:0;z-index:150;display:grid;place-items:center}
+.nudge[hidden]{display:none}
+.nudge .scrim{opacity:1}
+.nudge-card{position:relative;width:min(420px,calc(100vw - 32px));background:var(--s1);border:1px solid var(--line2);border-radius:20px;padding:22px 18px 14px;text-align:center}
+.nudge-title{font-size:21px;font-weight:700;letter-spacing:-.02em}
+.nudge-sub{font-size:15px;color:var(--fg2);margin:6px 0 16px}
+.nudge-acts{display:flex;gap:8px}
+.nudge-acts .pill{flex:1;padding:0 8px}
+.nudge-later{display:block;margin:10px auto 0;padding:10px 12px;color:var(--fg2)}
+
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}

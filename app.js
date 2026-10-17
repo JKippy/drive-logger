@@ -7,37 +7,47 @@
   var SILENCE_MS = 2500, FAST_SILENCE_MS = 1200, RECENT_MS = 60000;
 
   // ================= storage =================
+  // Every change is written immediately to BOTH localStorage (sync) and IndexedDB (strict durability), see store.js.
+  // On load both are read and merged by note id (newest updatedAt wins). Deletes are tombstones (deleted: true).
+  var P = window.DLPersist, Store = window.DLStore;
   function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
-  function load() {
-    try { var d = JSON.parse(localStorage.getItem(KEY)); if (d && d.sessions && d.notes) return d; } catch (e) {}
-    return null;
-  }
-  var db = load();
+  var lsRead = Store.readLS();
+  var db = P.normalize(lsRead.state);
+  var freshStart = !db;
   function sessionName(ts) { var d = new Date(ts); return 'Drive ' + C.localDate(d) + ' ' + C.localTime(d).slice(0, 5); }
   function newSession() {
     var s = { id: uid(), name: sessionName(Date.now()), start: Date.now() };
     db.sessions.push(s); db.current = s.id; db.view = s.id; save(); return s;
   }
-  if (!db) { db = { sessions: [], notes: [], current: null, view: null }; newSession(); }
-  if (!db.view) db.view = db.current;
-  db.trash = db.trash || [];
-  db.settings = db.settings || {};
-  if (!db.settings.replies) db.settings.replies = 'voice';   // 'voice' | 'chime'
-  if ((db.settings.v || 0) < 3) { db.settings.gps = true; db.settings.v = 3; }   // v3: GPS on by default
-  if (db.settings.night == null) db.settings.night = false;
-  if (!db.settings.side) db.settings.side = 'left';
-  if (!Array.isArray(db.settings.corrections)) db.settings.corrections = C.DEFAULT_CORRECTIONS.map(function (c) { return { from: c.from, to: c.to }; });
-  function corrected(t) { return C.applyCorrections(t, db.settings.corrections); }
-  function save() {
-    try { localStorage.setItem(KEY, JSON.stringify(db)); }
-    catch (e) { toast('Could not save. Storage is full or blocked!'); }
+  if (!db) { db = { sessions: [], notes: [], settings: {}, current: null, view: null, savedAt: 0 }; newSession(); }
+  function applyDefaults() {
+    if (!db.view) db.view = db.current;
+    db.settings = db.settings || {};
+    if (!db.settings.replies) db.settings.replies = 'voice';   // 'voice' | 'chime'
+    if ((db.settings.v || 0) < 3) { db.settings.gps = true; db.settings.v = 3; }   // v3: GPS on by default
+    if (db.settings.night == null) db.settings.night = false;
+    if (!db.settings.side) db.settings.side = 'left';
+    if (!Array.isArray(db.settings.corrections)) db.settings.corrections = C.DEFAULT_CORRECTIONS.map(function (c) { return { from: c.from, to: c.to }; });
   }
+  applyDefaults();
+  function corrected(t) { return C.applyCorrections(t, db.settings.corrections); }
+  var journal = null;   // loaded from IndexedDB when the More sheet opens
+  /** Persist now. `notes` = changed note(s); `op` = journal event (create/edit/delete/priority/retype/restore/recover). */
+  function save(notes, op) {
+    var list = notes ? [].concat(notes) : null, entries = null;
+    if (list && op) { var t = Date.now(); entries = list.map(function (n) { return P.jEntry(op, n, t); }); }
+    Store.write(db, list, entries);
+    if (entries && journal) journal.push.apply(journal, entries);
+    if (entries && window.DLSync) list.forEach(function (n) { DLSync.enqueue(op, n); });
+  }
+  /** Record a change to one note. */
+  function change(n, op) { n.updatedAt = Date.now(); n.updated = n.updatedAt; save(n, op); }
   function byTs(a, b) { return a.ts - b.ts; }
   function viewNotes() {
-    var n = db.view === 'all' ? db.notes.slice() : db.notes.filter(function (x) { return x.session === db.view; });
+    var n = db.view === 'all' ? P.live(db) : P.live(db).filter(function (x) { return x.session === db.view; });
     return n.sort(byTs);
   }
-  function sessionNotes() { return db.notes.filter(function (x) { return x.session === db.current; }).sort(byTs); }
+  function sessionNotes() { return db.notes.filter(function (x) { return !x.deleted && x.session === db.current; }).sort(byTs); }
   function getNote(id) { for (var i = 0; i < db.notes.length; i++) if (db.notes[i].id === id) return db.notes[i]; }
   /** target 1 = last note in the current session, 2 = the one before it */
   function lastNote(target) { var n = sessionNotes(); return n[n.length - (target || 1)] || null; }
@@ -54,11 +64,12 @@
   function renderSessions() {
     var sel = $('sessionSel'), html = '';
     db.sessions.slice().reverse().forEach(function (s) {
-      var count = db.notes.filter(function (n) { return n.session === s.id; }).length;
+      var count = db.notes.filter(function (n) { return !n.deleted && n.session === s.id; }).length;
       html += '<option value="' + s.id + '">' + (s.id === db.current ? '● ' : '') + esc(s.name.replace(/^Drive /, '')) + ' · ' + count + '</option>';
     });
-    html += '<option value="all">All sessions · ' + db.notes.length + '</option>';
+    html += '<option value="all">All sessions · ' + P.live(db).length + '</option>';
     sel.innerHTML = html; sel.value = db.view;
+    renderExportInfo();
   }
   var freshId = null, freshT = null;
   function renderHistory() {
@@ -94,24 +105,28 @@
         '<div class="sub">' + r[0] + loc + '</div></li>';
     }).join('');
   }
-  function render() { renderHistory(); if (sheetOpen) { renderSessions(); renderList(); renderCorrections(); } }
+  function render() { renderHistory(); if (sheetOpen) { renderSessions(); renderList(); renderCorrections(); renderDeleted(); renderStorage(); } }
   $('notes').addEventListener('click', function (e) {
     var act = e.target.getAttribute('data-act'); if (!act) return;
     var li = e.target.closest('.note'), n = li && getNote(li.getAttribute('data-id')); if (!n) return;
     if (act === 'edit') {
       var t = prompt('Edit ' + n.type + ' note (' + C.row(n)[1] + ')\n$$$ = high, $$ = medium, $ = low priority', n.text);
-      if (t !== null) { n.text = t.trim(); n.edited = true; n.updated = Date.now(); save(); render(); }
+      if (t !== null) { n.text = t.trim(); n.edited = true; change(n, 'edit'); render(); }
     } else if (act === 'del') {
       if (confirm('Delete this note?\n\n' + (n.text || '(no details)'))) deleteNote(n);
     }
   });
   $('sessionSel').addEventListener('change', function () { db.view = this.value; save(); render(); });
-  $('newSessionBtn').addEventListener('click', function () { var s = newSession(); render(); toast('Started ' + s.name); });
+  function startNewSession() { var s = newSession(); render(); toast('Started ' + s.name); }
+  $('newSessionBtn').addEventListener('click', function () {
+    if (P.unexported(db, db.current) > 0) nudge('new'); else startNewSession();
+  });
 
   // ---- More sheet ----
   var sheetOpen = false;
   function openSheet() {
     sheetOpen = true; render(); syncSettingsUI();
+    Store.readJournal().then(function (j) { journal = P.mergeJournal(j, journal || []); if (sheetOpen) renderDeleted(); });
     var w = $('sheetWrap'); w.hidden = false; void w.offsetWidth; w.classList.add('open');
   }
   function closeSheet() {
@@ -124,19 +139,17 @@
   /** loc = GPS snapshot taken when the keyword was heard (or null → blank lat/lon). */
   function addNote(type, text, ts, source, loc) {
     var now = Date.now();
-    var n = { id: uid(), session: db.current, ts: ts, type: type, text: text, source: source || 'voice', created: now,
+    var n = { id: uid(), session: db.current, ts: ts, type: type, text: text, source: source || 'voice', created: now, updatedAt: now,
       lat: null, lon: null, acc: null };
     if (loc === undefined) loc = gpsSnapshot();
     if (loc) { n.lat = loc.lat; n.lon = loc.lon; n.acc = Math.round(loc.acc); }
     db.notes.push(n);
     if (db.view !== 'all') db.view = db.current;
-    save(); render(); highlightNote(n.id);
+    save(n, 'create'); render(); highlightNote(n.id);
     return n;
   }
   function deleteNote(n) {
-    db.notes = db.notes.filter(function (x) { return x !== n; });
-    db.trash.push(n); if (db.trash.length > 30) db.trash.shift();
-    save(); render();
+    n.deleted = true; n.deletedAt = Date.now(); change(n, 'delete'); render();
   }
 
   // ================= feedback: chime, flash, speech, assistant feed =================
@@ -221,7 +234,7 @@
       case 'priority':
         n = lastNote(c.target);
         if (!n) return reply('There is no note to mark yet.', 'info');
-        n.text = C.setPriority(n.text, c.level); n.updated = now; save(); render();
+        n.text = C.setPriority(n.text, c.level); change(n, 'priority'); render();
         var which = c.target === 2 ? 'the note before last' : 'last note';
         if (c.level) { feed('✓ Marked ' + which + ' ' + c.level + ' priority'); reply('Marked ' + c.level + ' priority.'); }
         else { feed('✓ Removed priority from ' + which); reply('Priority removed.'); }
@@ -233,22 +246,21 @@
         deleteNote(n); feed('✕ Deleted: ' + shortText(n.text), 'warn'); reply('Deleted.', 'del');
         break;
       case 'undo':
-        n = db.trash.pop();
+        n = lastDeleted();
         if (!n) return reply('Nothing to bring back.', 'info');
-        n.updated = now; db.notes.push(n); save(); render();
-        feed('↩ Restored: ' + shortText(n.text)); reply('Restored.');
+        restoreNote(n);
         break;
       case 'amend':
         n = lastNote(1);
         if (!n) return;
         if (!c.explicit && now - lastActivity() > RECENT_MS) return;      // "also …" only right after a note
-        n.text = C.amendText(n.text, corrected(c.text)); n.updated = now; save(); render();
+        n.text = C.amendText(n.text, corrected(c.text)); change(n, 'edit'); render();
         feed('✎ Added to last note: ' + shortText(c.text)); reply('Added.');
         break;
       case 'retype':
         n = lastNote(c.target);
         if (!n) return reply('There is no note to change.', 'info');
-        n.type = c.type; n.updated = now; save(); render();
+        n.type = c.type; change(n, 'retype'); render();
         feed('⇄ Changed ' + (c.target === 2 ? 'the note before last' : 'last note') + ' to ' + c.type);
         reply(c.type === 'Intervention' ? 'Changed to intervention.' : 'Changed to log.');
         break;
@@ -368,7 +380,7 @@
       var body = corrected(o.text), text = o.level ? C.setPriority(body, o.level) : body;
       var existing = u.ids[k] && getNote(u.ids[k]);
       if (existing) {
-        if (!existing.edited && (existing.text !== text || existing.type !== o.type)) { existing.text = text; existing.type = o.type; save(); render(); }
+        if (!existing.deleted && !existing.edited && (existing.text !== text || existing.type !== o.type)) { existing.text = text; existing.type = o.type; change(existing, 'edit'); render(); }
       } else if (!voicePaused) {
         var n = addNote(o.type, text, u.stamps[k] || Date.now(), 'voice', u.stamps[k] ? u.locs[k] || null : undefined);
         u.ids[k] = n.id; confirmNote(n, o.level);
@@ -380,7 +392,27 @@
   function flushAll(force) {
     clearTimeout(silenceT);
     Object.keys(utt).forEach(function (k) { if (!utt[k].final) commit(utt[k], true, force === true); });
+    syncDrafts();
   }
+  /** In-progress captures are saved as drafts the moment a keyword is heard (timestamp + GPS of that moment),
+      and removed once they become notes. Drafts left over after a crash are restored as "(recovered)" notes on the next load. */
+  function currentDrafts() {
+    var list = [];
+    if (voicePaused) return list;
+    Object.keys(utt).forEach(function (key) {
+      var u = utt[key], seg = u.text.slice(u.base);
+      if (!seg.trim() || !u.stamps.length) return;
+      C.planSegment(seg).notes.forEach(function (o, k) {
+        if (u.ids[k] || !u.stamps[k]) return;
+        var loc = u.locs[k], body = corrected(o.text);
+        list.push({ key: P.draftKey(u.stamps[k], o.type), session: db.current, ts: u.stamps[k], type: o.type,
+          text: o.level ? C.setPriority(body, o.level) : body, lat: loc ? loc.lat : null, lon: loc ? loc.lon : null,
+          acc: loc ? Math.round(loc.acc) : null, updatedAt: u.lastAt || u.stamps[k] });
+      });
+    });
+    return list;
+  }
+  function syncDrafts() { Store.writeDrafts(currentDrafts()); }
   var FAST = { priority: 1, delete: 1, undo: 1, retype: 1, readback: 1, count: 1, pause: 1, resume: 1 };
   function pendingIsClosedCommand() {
     var keys = Object.keys(utt).filter(function (k) { return !utt[k].final && utt[k].text.length > utt[k].base; });
@@ -411,6 +443,7 @@
         if (i < e.resultIndex) continue;
         var u = utt[key] || (utt[key] = { text: '', base: 0, stamps: [], locs: [], ids: [], final: false, cmdDone: false, firstHeard: 0, firstLoc: null });
         if (u.final) continue;
+        if (u.text !== text) u.lastAt = now;
         u.text = text;
         if (u.base > text.length) u.base = text.length;
         if (!u.firstHeard && text.slice(u.base).trim()) { u.firstHeard = now; u.firstLoc = gpsSnapshot(); }
@@ -426,6 +459,7 @@
         if (res.isFinal) { u.final = true; commit(u, false); }
       }
       fails = 0;
+      syncDrafts();
       var tail = (finalTxt + interimTxt).trim();
       $('live').innerHTML = tail ? highlight(finalTxt) + '<span class="interim">' + highlight(interimTxt) + '</span>' : '…';
       var lv = $('live'); lv.classList.toggle('dim', voicePaused);
@@ -464,7 +498,7 @@
   }
   function startListening() {
     if (!SR) { setStatus('error', 'Speech recognition unsupported'); toast('This browser has no speech recognition. Use Safari on iPhone or Chrome.'); return; }
-    unlockAudio(); acquireWake(); startGps();
+    unlockAudio(); acquireWake(); startGps(); checkPersistence(true);
     listening = true; voicePaused = false; fails = 0; setMicBtn(); setStatus('starting', 'Starting…');
     startRec();
   }
@@ -475,7 +509,11 @@
     ttsBusy = false; ttsPending = 0;
     flushAll(true); releaseWake(); setStatus('idle', 'Ready');
   }
-  function toggleListening() { listening ? stopListening() : startListening(); }
+  function toggleListening() {
+    if (!listening) return startListening();
+    stopListening();
+    if (P.unexported(db, db.current) > 0) nudge('stop');      // end-of-drive safety nudge
+  }
   $('micBtn').addEventListener('click', toggleListening);
   $('orb').addEventListener('click', toggleListening);
   document.addEventListener('visibilitychange', function () {
@@ -485,6 +523,7 @@
       rec = null; clearTimeout(restartT); restartT = setTimeout(startRec, 300);
     } else if (document.visibilityState === 'hidden') flushAll(true);
   });
+  window.addEventListener('pagehide', function () { flushAll(true); });
 
   // ================= settings =================
   function syncSettingsUI() {
@@ -550,8 +589,10 @@
   // ================= export =================
   function exportOpts() { return { gps: db.settings.gps }; }
   function exportNotes() { var n = viewNotes(); if (!n.length) { toast('No notes to export'); return null; } return n; }
-  function fileName() {
-    var s = db.sessions.filter(function (x) { return x.id === db.view; })[0];
+  function sessionsOf(notes) { var o = {}; notes.forEach(function (n) { o[n.session] = 1; }); return Object.keys(o); }
+  function exported(notes) { P.markExported(db, sessionsOf(notes), Date.now()); save(); if (sheetOpen) renderExportInfo(); }
+  function fileName(sessId) {
+    var s = db.sessions.filter(function (x) { return x.id === (sessId || db.view); })[0];
     return (s ? s.name : 'Drive all sessions').replace(/[^\w\-]+/g, '_') + '.csv';
   }
   function legacyCopy(text) {
@@ -561,31 +602,188 @@
     var ok = false; try { ok = document.execCommand('copy'); } catch (e) {}
     document.body.removeChild(ta); return ok;
   }
-  // Clipboard write happens synchronously inside the click handler (required by iOS Safari).
-  $('copyBtn').addEventListener('click', function () {
-    var n = exportNotes(); if (!n) return;
-    var text = C.toTSV(n, $('hdrChk').checked, exportOpts());
-    var msg = 'Copied ' + n.length + ' row' + (n.length === 1 ? '' : 's') + '. Paste into your sheet.';
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(function () { toast(msg); }, function () { toast(legacyCopy(text) ? msg : 'Copy failed. Try Download CSV.'); });
-    } else toast(legacyCopy(text) ? msg : 'Copy failed. Try Download CSV.');
-  });
-  $('csvBtn').addEventListener('click', function () {
-    var n = exportNotes(); if (!n) return;
-    var blob = new Blob(['\ufeff' + C.toCSV(n, exportOpts())], { type: 'text/csv;charset=utf-8' });
-    var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fileName();
+  function downloadBlob(blob, name) {
+    var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+  }
+  // Each export runs synchronously inside the tap handler (iOS requires that for clipboard and share). done(ok) after.
+  function doCopy(n, done) {
+    var text = C.toTSV(n, $('hdrChk').checked, exportOpts());
+    var msg = 'Copied ' + n.length + ' row' + (n.length === 1 ? '' : 's') + '. Paste into your sheet.';
+    var fin = function (ok) { toast(ok ? msg : 'Copy failed. Try Download CSV.'); if (ok) exported(n); if (done) done(ok, 'Copied'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(function () { fin(true); }, function () { fin(legacyCopy(text)); });
+    else fin(legacyCopy(text));
+  }
+  function doCsv(n, name, done) {
+    downloadBlob(new Blob(['\ufeff' + C.toCSV(n, exportOpts())], { type: 'text/csv;charset=utf-8' }), name);
+    exported(n); if (done) done(true, 'Downloaded');
+  }
+  function doShare(n, name, done) {
+    var csv = C.toCSV(n, exportOpts()), file = null, p = null;
+    try { file = new File([csv], name, { type: 'text/csv' }); } catch (e) {}
+    if (file && navigator.canShare && navigator.canShare({ files: [file] })) p = navigator.share({ files: [file], title: 'Drive Logger notes' });
+    else if (navigator.share) p = navigator.share({ title: 'Drive Logger notes', text: C.toTSV(n, true, exportOpts()) });
+    else { toast('Sharing not supported here. Use Download CSV.'); return; }
+    p.then(function () { exported(n); if (done) done(true, 'Shared'); }, function () {});
+  }
+  $('copyBtn').addEventListener('click', function () { var n = exportNotes(); if (n) doCopy(n); });
+  $('csvBtn').addEventListener('click', function () { var n = exportNotes(); if (n) doCsv(n, fileName()); });
+  $('shareBtn').addEventListener('click', function () { var n = exportNotes(); if (n) doShare(n, fileName()); });
+  if (!navigator.share) { $('shareBtn').hidden = true; $('nudgeShare').hidden = true; }
+
+  function fmtAgo(t) {
+    var d = new Date(t), today = C.localDate(new Date()) === C.localDate(d);
+    return (today ? '' : C.localDate(d) + ' ') + C.localTime(d).slice(0, 5);
+  }
+  function renderExportInfo() {
+    var el = $('exportInfo'), id = db.view === 'all' ? db.current : db.view;
+    var s = db.sessions.filter(function (x) { return x.id === id; })[0], k = P.unexported(db, id);
+    if (!s) { el.textContent = ''; return; }
+    el.className = 'fine export-info' + (k ? ' pending' : '');
+    el.textContent = (k ? k + ' note' + (k === 1 ? '' : 's') + ' not exported' : (s.exportedAt ? 'All exported' : 'Nothing to export yet')) +
+      (s.exportedAt ? ' · last export ' + fmtAgo(s.exportedAt) : '');
+  }
+
+  // ---- end-of-drive nudge (Stop, or New session with unexported notes) ----
+  var nudgeMode = null;
+  function nudge(mode) {
+    nudgeMode = mode;
+    var k = P.unexported(db, db.current);
+    $('nudgeTitle').textContent = k + ' note' + (k === 1 ? '' : 's') + ' not exported yet';
+    $('nudgeSub').textContent = 'Save a copy off the phone before you go.';
+    $('nudgeLater').textContent = mode === 'new' ? 'Skip, start new drive' : 'Not now';
+    $('nudge').hidden = false;
+  }
+  function nudgeDone(ok, what) {
+    if (!ok) return;
+    $('nudgeTitle').textContent = '✓ ' + what;
+    $('nudgeSub').textContent = 'Notes from this drive are saved off the phone.';
+    $('nudgeLater').textContent = nudgeMode === 'new' ? 'Start new drive' : 'Done';
+  }
+  function closeNudge(go) { $('nudge').hidden = true; if (go && nudgeMode === 'new') startNewSession(); nudgeMode = null; }
+  function curNotes() { return sessionNotes(); }
+  $('nudgeCopy').addEventListener('click', function () { doCopy(curNotes(), nudgeDone); });
+  $('nudgeCsv').addEventListener('click', function () { doCsv(curNotes(), fileName(db.current), nudgeDone); });
+  $('nudgeShare').addEventListener('click', function () { doShare(curNotes(), fileName(db.current), nudgeDone); });
+  $('nudgeLater').addEventListener('click', function () { closeNudge(true); });
+  $('nudgeScrim').addEventListener('click', function () { closeNudge(false); });
+
+  // ================= durability: warnings, persistence, recently deleted, backup =================
+  var isPrivate = null, persisted = null, standalone = !!(navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches));
+  function renderWarn() {
+    var h = Store.health(), el = $('warnBar'), msg = '', level = '';
+    if (isPrivate) { msg = 'Private Browsing: notes are erased when this tab closes. Open Drive Logger in a normal Safari tab or from the Home Screen, and export now.'; level = 'bad'; }
+    else if (h.ls === 'fail' && h.idb !== 'ok' && h.idb !== 'pending') { msg = 'Notes are NOT being saved (storage full or blocked: ' + (h.lsErr || h.idbErr) + '). Copy or export now.'; level = 'bad'; }
+    else if (h.ls === 'fail') { msg = 'localStorage failed (' + h.lsErr + '). Notes are saved in IndexedDB only. Export soon.'; level = 'warn'; }
+    else if (h.idb === 'fail') { msg = 'Backup store (IndexedDB) failed' + (h.idbErr ? ' (' + h.idbErr + ')' : '') + '. Notes are saved in localStorage only.'; level = 'warn'; }
+    el.textContent = msg; el.className = 'warnbar ' + level; el.hidden = !msg;
+    if (sheetOpen) renderStorage();
+  }
+  Store.onHealth(renderWarn);
+  function checkPersistence(ask) {
+    var p = ask ? Store.persist() : (navigator.storage && navigator.storage.persisted ? navigator.storage.persisted().catch(function () { return null; }) : Promise.resolve(null));
+    return p.then(function (v) { persisted = v; if (sheetOpen) renderStorage(); });
+  }
+  function renderStorage() {
+    var h = Store.health(), mark = function (v) { return v === 'ok' ? '✓' : v === 'pending' ? '…' : v === 'unavailable' ? 'n/a' : '✕ failing'; };
+    $('stStores').textContent = 'Local ' + mark(h.ls) + ' · IndexedDB ' + mark(h.idb);
+    $('stStores').className = 'st-val' + (h.ls !== 'ok' || (h.idb !== 'ok' && h.idb !== 'pending') ? ' bad' : '');
+    $('stPersist').textContent = persisted === true ? 'Persistent ✓' : persisted === false ? 'Best effort' : 'Unknown';
+    $('stPersist').className = 'st-val' + (persisted === true ? '' : ' warn');
+    $('stMode').textContent = isPrivate ? 'Private Browsing ✕' : standalone ? 'Home Screen app' : 'Browser tab';
+    $('stMode').className = 'st-val' + (isPrivate ? ' bad' : '');
+    var tips = [];
+    if (isPrivate) tips.push('Private Browsing erases everything when the tab closes.');
+    if (persisted !== true && !standalone) tips.push('Safari can clear site data after 7 days without visiting. Add to Home Screen to keep notes safe.');
+    if (persisted !== true && standalone) tips.push('Home Screen apps are exempt from Safari’s 7-day cleanup; iOS can still evict data if the phone runs out of space.');
+    tips.push('Every change is saved instantly to two stores on this phone. Export or back up after each drive.');
+    $('stTip').textContent = tips.join(' ');
+  }
+
+  function lastDeleted() {
+    var best = null;
+    db.notes.forEach(function (n) { if (n.deleted && (!best || (n.deletedAt || 0) > (best.deletedAt || 0))) best = n; });
+    return best;
+  }
+  function restoreNote(n) {
+    var cur = getNote(n.id);
+    if (!cur) { cur = P.clone(n); delete cur.fromJournal; db.notes.push(cur); }
+    cur.deleted = false; delete cur.deletedAt; change(cur, 'restore'); render();
+    feed('↩ Restored: ' + shortText(cur.text)); reply('Restored.');
+    return cur;
+  }
+  var deletedCache = [];
+  function renderDeleted() {
+    deletedCache = P.recentlyDeleted(db, journal).slice(0, 50);
+    $('delCount').textContent = deletedCache.length ? '· ' + deletedCache.length : '';
+    $('deleted').innerHTML = deletedCache.length ? deletedCache.map(function (n, i) {
+      return '<li class="note ' + n.type + '"><div class="meta"><span class="time">' + C.localTime(new Date(n.ts)) + '</span><span class="chip ' + n.type + '">' + n.type +
+        '</span><span class="acts"><button data-i="' + i + '">Restore</button></span></div><div class="text">' + esc(C.splitPriority(n.text).base || '(no details)') +
+        '</div><div class="sub">' + C.localDate(new Date(n.ts)) + ' · deleted ' + (n.deletedAt ? fmtAgo(n.deletedAt) : '') + '</div></li>';
+    }).join('') : '<li class="empty-list">Nothing deleted.</li>';
+  }
+  $('deleted').addEventListener('click', function (e) {
+    var i = e.target.getAttribute('data-i'); if (i == null) return;
+    var n = deletedCache[+i]; if (n) restoreNote(n);
   });
-  $('shareBtn').addEventListener('click', function () {
-    var n = exportNotes(); if (!n) return;
-    var csv = C.toCSV(n, exportOpts()), file = null;
-    try { file = new File([csv], fileName(), { type: 'text/csv' }); } catch (e) {}
-    if (file && navigator.canShare && navigator.canShare({ files: [file] })) navigator.share({ files: [file], title: 'Drive Logger notes' }).catch(function () {});
-    else if (navigator.share) navigator.share({ title: 'Drive Logger notes', text: C.toTSV(n, true, exportOpts()) }).catch(function () {});
-    else toast('Sharing not supported here. Use Download CSV.');
+
+  // ---- full backup (JSON) and merge-restore ----
+  $('backupBtn').addEventListener('click', function () {
+    Store.readJournal().then(function (j) {
+      journal = P.mergeJournal(j, journal || []);
+      var b = P.buildBackup(db, journal, Date.now()), d = new Date();
+      var name = 'drive-logger-backup-' + C.localDate(d) + '-' + C.localTime(d).replace(/:/g, '').slice(0, 4) + '.json';
+      downloadBlob(new Blob([JSON.stringify(b, null, 1)], { type: 'application/json' }), name);
+      toast('Backup saved: ' + P.live(db).length + ' notes, ' + journal.length + ' journal entries');
+    });
   });
-  if (!navigator.share) $('shareBtn').hidden = true;
+  $('restoreBtn').addEventListener('click', function () { $('restoreFile').value = ''; $('restoreFile').click(); });
+  $('restoreFile').addEventListener('change', function () {
+    var f = this.files && this.files[0]; if (!f) return;
+    var rd = new FileReader();
+    rd.onload = function () {
+      Store.readJournal().then(function (j) {
+        var r;
+        try { r = P.restore(db, String(rd.result), P.mergeJournal(j, journal || [])); }
+        catch (e) { toast('Restore failed: ' + e.message); return; }
+        db = r.db; applyDefaults(); journal = r.journal;
+        Store.write(db, 'all', null); Store.replaceJournal(journal);
+        render(); syncSettingsUI();
+        toast('Restored: ' + r.stats.added + ' new, ' + r.stats.updated + ' updated. Nothing was overwritten.');
+      });
+    };
+    rd.readAsText(f);
+  });
+
+  // ---- boot: merge IndexedDB with localStorage, recover crashed drafts, resync both stores ----
+  var bootDone = false;
+  function boot() {
+    return Store.readIDB().then(function (r) {
+      var idbState = P.normalize(r.state), msgs = [];
+      if (idbState && P.isState(idbState)) {
+        if (freshStart) {    // localStorage was empty/corrupt: drop the placeholder session if unused, trust IndexedDB's settings
+          var fid = db.current;
+          if (!db.notes.some(function (n) { return n.session === fid; }) && idbState.sessions.length) db.sessions = db.sessions.filter(function (s) { return s.id !== fid; });
+        }
+        var m = P.merge(db, idbState, freshStart ? 'b' : 'newest');
+        db = m.db; applyDefaults();
+        var k = m.stats.added + m.stats.updated;
+        if (k && (freshStart || lsRead.corrupt)) msgs.push('Restored ' + P.live(db).length + ' notes from IndexedDB');
+        else if (k) msgs.push('Merged ' + k + ' newer note' + (k === 1 ? '' : 's') + ' from IndexedDB');
+      }
+      var rec = P.recoverDrafts(db, P.mergeDrafts(Store.readLSDrafts(), r.drafts), Date.now());
+      if (rec.length) msgs.push('Recovered ' + rec.length + ' unfinished note' + (rec.length === 1 ? '' : 's'));
+      Store.release();
+      Store.write(db, 'all', rec.map(function (n) { return P.jEntry('recover', n); }));   // resync both stores
+      Store.writeDrafts(currentDrafts(), true);
+      bootDone = true;
+      Store.readJournal().then(function (j) { journal = P.mergeJournal(j, journal || []); });   // heals the IndexedDB journal from the mirror
+      render(); syncSettingsUI();
+      if (rec.length) { highlightNote(rec[rec.length - 1].id); feed('↺ ' + msgs[msgs.length - 1], 'warn'); }
+      if (msgs.length) toast(msgs.join(' · '));
+    });
+  }
 
   if (!SR) setStatus('error', 'No speech recognition');
   else setStatus('idle', 'Ready');
@@ -594,5 +792,9 @@
   // Ask for location up front only if it's already granted (no surprise prompt); otherwise on Start.
   try { if (db.settings.gps && navigator.permissions) navigator.permissions.query({ name: 'geolocation' }).then(function (r) { if (r.state === 'granted') startGps(); else if (r.state === 'denied') { gpsState = 'denied'; renderGps(); } }).catch(function () {}); } catch (e) {}
   render();
-  window.__dl = { exec: exec, db: function () { return db; } };   // debugging hook
+  boot();
+  checkPersistence(true);
+  Store.detectPrivate().then(function (v) { isPrivate = v; renderWarn(); });
+  if (db.settings.sheetSync && window.DLSync) DLSync.configure(db.settings.sheetSync);   // dormant until configured
+  window.__dl = { exec: exec, db: function () { return db; }, ready: function () { return bootDone; }, store: Store };   // debugging/test hook
 })();

@@ -41,6 +41,7 @@
 
   <!-- note history -->
   <section class="history">
+    <div id="warnBar" class="warnbar" role="alert" hidden></div>
     <div class="hist-head">
       <div class="slot"><span id="lastLbl" class="lbl">This session · <span id="sessCount">0 notes</span></span><span id="feed" class="feed" aria-live="polite"></span></div>
       <span class="clock" title="Current local time (device clock)"><span class="k">Now</span><span id="clock">--:--:--</span></span>
@@ -81,6 +82,7 @@
         <select id="sessionSel" aria-label="Session"></select>
         <button id="newSessionBtn" class="pill accent">New session</button>
       </div>
+      <div id="exportInfo" class="fine export-info"></div>
     </div>
 
     <div class="group">
@@ -90,6 +92,22 @@
         <button id="shareBtn" class="pill grow">Share…</button>
       </div>
       <div class="list"><label class="setting"><span>Header row when copying</span><input type="checkbox" id="hdrChk" class="switch"></label></div>
+    </div>
+
+    <div class="group">
+      <div class="group-title">Storage &amp; backup</div>
+      <div class="list">
+        <div class="setting"><span>Saved to</span><span id="stStores" class="st-val">…</span></div>
+        <div class="setting"><span>Storage</span><span id="stPersist" class="st-val">…</span></div>
+        <div class="setting"><span>Running as</span><span id="stMode" class="st-val">…</span></div>
+      </div>
+      <div id="stTip" class="fine"></div>
+      <div class="stack">
+        <button id="backupBtn" class="pill">Export full backup (JSON)</button>
+        <button id="restoreBtn" class="pill">Restore from backup…</button>
+      </div>
+      <input id="restoreFile" type="file" accept="application/json,.json" hidden>
+      <div class="fine">Restore merges: notes missing here are added and newer edits win. Nothing is overwritten or deleted.</div>
     </div>
 
     <div class="group">
@@ -124,6 +142,11 @@
       <ul id="notes" class="notes"></ul>
     </div>
 
+    <details class="group help" id="deletedBox">
+      <summary class="group-title"><span>Recently deleted <span id="delCount" class="sub"></span></span></summary>
+      <ul id="deleted" class="notes"></ul>
+    </details>
+
     <details class="group help" id="help">
       <summary class="group-title">Help &amp; voice commands</summary>
       <p>Tap the orb and allow the microphone and location. Say <b>“log …”</b> or <b>“intervention …”</b>, then describe the event.
@@ -149,13 +172,30 @@
       <p class="fine">Say commands as their own sentence. They're never taken from inside a note. The app stops listening while it speaks a reply.</p>
       <p class="fine"><b>iPhone:</b> keep the app in the foreground with the screen on. iOS stops listening on lock or app switch and resumes when you return.
         Safari may ask for mic and location again after a reload. Needs Siri &amp; Dictation enabled. Turn off Silent mode to hear replies.
-        Install with Share › Add to Home Screen; if listening misbehaves there, use a Safari tab. Notes are stored only on this phone, so export after each drive.</p>
+        Install with Share › Add to Home Screen; if listening misbehaves there, use a Safari tab. Notes are stored only on this phone (saved instantly to two separate stores), so export after each drive. Don't use Private Browsing: it erases notes when the tab closes.</p>
     </details>
+  </div>
+</div>
+
+<!-- end-of-drive nudge -->
+<div id="nudge" class="nudge" hidden>
+  <div id="nudgeScrim" class="scrim"></div>
+  <div class="nudge-card" role="dialog" aria-labelledby="nudgeTitle">
+    <div id="nudgeTitle" class="nudge-title"></div>
+    <div id="nudgeSub" class="nudge-sub"></div>
+    <div class="nudge-acts">
+      <button id="nudgeCopy" class="pill">Copy</button>
+      <button id="nudgeCsv" class="pill">Download</button>
+      <button id="nudgeShare" class="pill">Share</button>
+    </div>
+    <button id="nudgeLater" class="linkbtn nudge-later">Not now</button>
   </div>
 </div>
 
 <video id="nosleep" playsinline muted loop src="nosleep.mp4" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none"></video>
 <script src="core.js"></script>
+<script src="persist.js"></script>
+<script src="store.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
