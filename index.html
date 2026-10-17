@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Drive Logger</title>
+<meta name="description" content="Hands-free voice event recorder for AV test drives">
+<meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Drive Logger">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="manifest" href="manifest.json">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app" id="app">
+  <!-- slim status row -->
+  <header class="statusbar">
+    <div id="status" class="st st-idle" role="status" aria-live="polite"><i class="dot"></i><span id="statusText">Ready</span></div>
+    <div class="st-right">
+      <div id="gpsStatus" class="st gps-off" title="Location accuracy"><i class="dot"></i><span id="gpsText">GPS off</span></div>
+      <div class="st elapsed" title="Time since this drive session started"><span class="k">Drive</span><span id="elapsed">0:00:00</span></div>
+    </div>
+  </header>
+
+  <!-- compact orb + state + live transcript -->
+  <section class="top">
+    <button id="orb" class="orb idle" aria-label="Start or stop listening">
+      <svg class="ic ic-mic" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg>
+      <svg class="ic ic-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6v12M15 6v12"/></svg>
+    </button>
+    <div class="top-text">
+      <div id="orbLabel" class="orb-label">Tap to start</div>
+      <div id="live" class="live" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <!-- note history -->
+  <section class="history">
+    <div class="hist-head">
+      <div class="slot"><span id="lastLbl" class="lbl">This session · <span id="sessCount">0 notes</span></span><span id="feed" class="feed" aria-live="polite"></span></div>
+      <span class="clock" title="Current local time (device clock)"><span class="k">Now</span><span id="clock">--:--:--</span></span>
+    </div>
+    <ul id="history" class="hist"></ul>
+  </section>
+
+  <!-- primary controls -->
+  <nav class="controls">
+    <button id="copyBtn" class="ctl" aria-label="Copy for spreadsheet">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6.5A2.5 2.5 0 0 0 13.5 4h-7A2.5 2.5 0 0 0 4 6.5v7A2.5 2.5 0 0 0 6.5 16H8"/></svg>
+      <span>Copy</span>
+    </button>
+    <button id="micBtn" class="ctl primary"><span id="micLabel">Start</span></button>
+    <button id="moreBtn" class="ctl" aria-label="More">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>
+      <span>More</span>
+    </button>
+  </nav>
+</div>
+
+<div id="toast" class="toast" role="alert"></div>
+<div id="night" aria-hidden="true"></div>
+
+<!-- More sheet -->
+<div id="sheetWrap" class="sheet-wrap" hidden>
+  <div class="scrim" data-close></div>
+  <div class="sheet" role="dialog" aria-label="More">
+    <div class="grabber" data-close></div>
+    <div class="sheet-head">
+      <h2>Drive Logger</h2>
+      <button id="sheetClose" class="pill" data-close>Done</button>
+    </div>
+
+    <div class="group">
+      <div class="group-title">Session</div>
+      <div class="row">
+        <select id="sessionSel" aria-label="Session"></select>
+        <button id="newSessionBtn" class="pill accent">New session</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="group-title">Export</div>
+      <div class="row">
+        <button id="csvBtn" class="pill grow">Download CSV</button>
+        <button id="shareBtn" class="pill grow">Share…</button>
+      </div>
+      <div class="list"><label class="setting"><span>Header row when copying</span><input type="checkbox" id="hdrChk" class="switch"></label></div>
+    </div>
+
+    <div class="group">
+      <div class="group-title">Settings</div>
+      <div class="list">
+      <div class="setting"><span>Replies</span>
+        <div class="seg" id="repliesSeg"><button data-v="voice">Spoken</button><button data-v="chime">Chime</button></div>
+      </div>
+      <label class="setting"><span>GPS location on notes</span><input type="checkbox" id="gpsChk" class="switch"></label>
+      <label class="setting"><span>Night dim</span><input type="checkbox" id="nightChk" class="switch"></label>
+      <div class="setting"><span>Landscape controls</span>
+        <div class="seg" id="sideSeg"><button data-v="left">Left</button><button data-v="right">Right</button></div>
+      </div>
+      </div>
+      <div id="wakeInfo" class="fine"></div>
+    </div>
+
+    <div class="group">
+      <div class="group-title">Corrections <span class="sub">heard → written, applied to note text</span></div>
+      <div class="list" id="corrList"></div>
+      <form id="corrForm" class="corr-add">
+        <input id="corrFrom" placeholder="Heard" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Heard">
+        <span class="arrow">→</span>
+        <input id="corrTo" placeholder="Write as" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Write as">
+        <button class="pill accent" type="submit">Add</button>
+      </form>
+      <button id="corrReset" class="linkbtn" type="button">Restore default AV terms</button>
+    </div>
+
+    <div class="group">
+      <div class="group-title"><span id="countLbl">Notes</span></div>
+      <ul id="notes" class="notes"></ul>
+    </div>
+
+    <details class="group help" id="help">
+      <summary class="group-title">Help &amp; voice commands</summary>
+      <p>Tap the orb and allow the microphone and location. Say <b>“log …”</b> or <b>“intervention …”</b>, then describe the event.
+        It saves after about 2.5&nbsp;s of silence, timestamped and located at the moment you said the keyword.
+        <b>Copy</b> puts the session on the clipboard for Sheets or Excel:
+        <b>Date · Time · ISO timestamp · Type · Note · Lat · Lon</b> (Lat/Lon only while GPS is on). Priority stays in the note as $$$ / $$ / $.</p>
+      <table class="cheat">
+        <tr><th>Priority</th><td>“mark that high priority” · “make it medium” · “that’s low priority” · “bump that to high” · “that’s urgent” ·
+          “give the one before that high priority” · “remove the priority”. While dictating: “log <b>high priority</b> brake fade…”</td></tr>
+        <tr><th>Delete</th><td>“scratch that” · “delete that last one” · “never mind” (right after a note)</td></tr>
+        <tr><th>Undo</th><td>“bring that back” · “undo”</td></tr>
+        <tr><th>Add</th><td>“add to that, …” (any time) · “also, …” (within 60&nbsp;s)</td></tr>
+        <tr><th>Type</th><td>“change that to an intervention” · “make that a log”</td></tr>
+        <tr><th>Mark</th><td>“mark” saves a timestamped <i>[marked event]</i>. Fill it in later with “add to that, …”</td></tr>
+        <tr><th>Ask</th><td>“read that back” · “how many notes” · “how many interventions”</td></tr>
+        <tr><th>Pause</th><td>“pause notes” → only “resume notes” is heard</td></tr>
+      </table>
+      <p class="fine"><b>Timestamps:</b> each note uses this phone's clock (shown as <b>Now</b> above the notes) at the moment speech recognition
+        first showed the keyword, or the start of the utterance if it opens with the keyword. Recognition usually reports words about
+        0.5–1.5&nbsp;s after you say them, so times can run that much late. <b>Drive</b> is time since the session started; <b>GPS ±5 m</b> is location accuracy.</p>
+      <p class="fine"><b>Accuracy:</b> start each note with the keyword after a short pause. Near-misses like “blog”, “lock” or “in convention”
+        are accepted at the start. Add anything it keeps mishearing (names, places, jargon) under <b>Corrections</b>.</p>
+      <p class="fine">Say commands as their own sentence. They're never taken from inside a note. The app stops listening while it speaks a reply.</p>
+      <p class="fine"><b>iPhone:</b> keep the app in the foreground with the screen on. iOS stops listening on lock or app switch and resumes when you return.
+        Safari may ask for mic and location again after a reload. Needs Siri &amp; Dictation enabled. Turn off Silent mode to hear replies.
+        Install with Share › Add to Home Screen; if listening misbehaves there, use a Safari tab. Notes are stored only on this phone, so export after each drive.</p>
+    </details>
+  </div>
+</div>
+
+<video id="nosleep" playsinline muted loop src="nosleep.mp4" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none"></video>
+<script src="core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

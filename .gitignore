@@ -1,0 +1,6 @@
+# local / box-specific
+node_modules/
+*.log
+PUBLIC_URL.txt
+start.sh
+.DS_Store
