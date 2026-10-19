@@ -587,7 +587,7 @@
   setInterval(tick, 1000);
 
   // ================= export =================
-  function exportOpts() { return { gps: db.settings.gps }; }
+  function exportOpts() { return {}; }   // Copy/CSV/Share use Jason's fixed 5 columns (no Lat/Lon)
   function exportNotes() { var n = viewNotes(); if (!n.length) { toast('No notes to export'); return null; } return n; }
   function sessionsOf(notes) { var o = {}; notes.forEach(function (n) { o[n.session] = 1; }); return Object.keys(o); }
   function exported(notes) { P.markExported(db, sessionsOf(notes), Date.now()); save(); if (sheetOpen) renderExportInfo(); }

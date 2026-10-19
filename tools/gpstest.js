@@ -43,20 +43,23 @@ const notesOf = p => p.evaluate(() => JSON.parse(localStorage.getItem('driveLogg
   await p.click('#copyBtn'); await p.waitForTimeout(200);
   let clip = await p.evaluate(() => navigator.clipboard.readText());
   console.log('A3 clipboard TSV:\n' + clip);
-  assert.ok(clip.split('\n')[0].split('\t').length === 7 && clip.includes('\t42.480610\t-83.475520'));
+  assert.strictEqual(clip.split('\n')[0].split('\t').length, 5);
+  assert.ok(clip.includes('Log\t\t') || /\tLog\t\t/.test(clip));
+  assert.ok(!clip.includes('42.480610'));   // Lat/Lon stay on the note, not in Copy/CSV
   // CSV download from the sheet
   await p.click('#moreBtn'); await p.waitForTimeout(500);
   const [dl] = await Promise.all([p.waitForEvent('download'), p.click('#csvBtn')]);
   const csv = fs.readFileSync(await dl.path(), 'utf8');
   console.log('A4 CSV file (' + dl.suggestedFilename() + '):\n' + csv.trim());
-  assert.ok(csv.includes('Date,Time,ISO timestamp,Type,Note,Lat,Lon') && csv.includes(',42.501220,-83.444760'));
-  // GPS toggle off → classic 5 columns
-  await p.click('#gpsChk'); await p.waitForTimeout(200);
+  assert.ok(csv.includes('Time (cmd+shift+:),Logtime (s),Type,Triage Priority,Comments'));  // may start with a UTF-8 BOM
+  assert.ok(csv.includes(',,I,,') || csv.includes(',I,'));
+  assert.ok(!csv.includes('42.501220'));
+  // Header-row checkbox → Jason's exact header; GPS on/off does not change export columns
   await p.click('#hdrChk'); await p.click('[data-close].pill'); await p.waitForTimeout(500);
   await p.click('#copyBtn'); await p.waitForTimeout(200);
   clip = await p.evaluate(() => navigator.clipboard.readText());
-  console.log('A5 GPS off → header:', JSON.stringify(clip.split('\n')[0]), '| status:', await p.textContent('#gpsText'));
-  assert.strictEqual(clip.split('\n')[0], 'Date\tTime\tISO timestamp\tType\tNote');
+  console.log('A5 with header:', JSON.stringify(clip.split('\n')[0]), '| status:', await p.textContent('#gpsText'));
+  assert.strictEqual(clip.split('\n')[0], 'Time (cmd+shift+:)\tLogtime (s)\tType\tTriage Priority\tComments');
   // ---- C: stale fix → blank lat/lon ----
   await p.click('#moreBtn'); await p.waitForTimeout(400); await p.click('#gpsChk'); await p.click('[data-close].pill'); await p.waitForTimeout(800);
   // Chromium keeps re-delivering the mocked fix, so freeze the watcher to simulate losing signal, then age the last fix by 45 s
@@ -83,11 +86,13 @@ const notesOf = p => p.evaluate(() => JSON.parse(localStorage.getItem('driveLogg
   await p.evaluate(() => __say('intervention cyclist cut in front', true)); await p.waitForTimeout(800);
   n = await notesOf(p);
   await p.click('#hdrChk', { force: true }).catch(() => {});
-  const tsv = await p.evaluate(() => DLCore.toTSV(JSON.parse(localStorage.getItem('driveLogger.v1')).notes, true, { gps: true }));
+  const tsv = await p.evaluate(() => DLCore.toTSV(JSON.parse(localStorage.getItem('driveLogger.v1')).notes, true));
   console.log('B1 denied status:', await p.textContent('#gpsText'), '| class:', await p.getAttribute('#gpsStatus', 'class'));
   console.log('B2 note:', JSON.stringify(n[0]));
   console.log('B3 TSV:', JSON.stringify(tsv));
-  assert.strictEqual(n[0].lat, null); assert.ok(tsv.split('\n')[1].endsWith('\t\t'));
+  assert.strictEqual(n[0].lat, null);
+  assert.strictEqual(tsv.split('\n')[0], 'Time (cmd+shift+:)\tLogtime (s)\tType\tTriage Priority\tComments');
+  assert.ok(/\tI\t\t/.test(tsv.split('\n')[1]));   // Type I, empty Triage Priority, Comments last
   await ctx.close();
   await b.close();
   console.log('\nGPS tests passed');

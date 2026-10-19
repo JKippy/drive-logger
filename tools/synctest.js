@@ -51,8 +51,8 @@ async function until(fn, ms = 8000, step = 100) { const t = Date.now(); let v; w
     const toast1 = await p.textContent('#toast');
     await until(async () => rows().length === 2);
     let r = rows();
-    assert.deepStrictEqual(r.map(x => [x[3], x[4]]).sort(), [['Intervention', 'took over at the light'], ['Log', 'lead car braked hard near exit 12']]);
-    assert.ok(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d-0[45]:00$/.test(r[0][2]) && /^Drive \d{4}-\d\d-\d\d \d\d:\d\d$/.test(r[0][7]) && r[0][8]);
+    assert.deepStrictEqual(r.map(x => [x[2], x[4]]).sort(), [['I', 'took over at the light'], ['Log', 'lead car braked hard near exit 12']]);
+    assert.ok(/^(1[0-2]|[1-9]):\d\d:\d\d (AM|PM)$/.test(r[0][0]) && r[0][1] === '' && r[0][3] === '' && /^Drive \d{4}-\d\d-\d\d \d\d:\d\d$/.test(r[0][7]) && r[0][8]);
     assert.strictEqual(await until(async () => (await ind()) === 'Synced' && 'ok'), 'ok');
     pass(`"${toast1}" → backfill put both existing notes in the sheet (ISO ${r[0][2]}, session "${r[0][7]}"); status row shows "Synced"`);
     const posts = fake.log.filter(x => x.method === 'POST');
@@ -66,7 +66,7 @@ async function until(fn, ms = 8000, step = 100) { const t = Date.now(); let v; w
     await say('log cyclist cut in front at the merge');
     await until(async () => rows().length === 3);
     await say('mark that high priority');
-    await until(async () => rows().some(x => x[4] === 'cyclist cut in front at the merge $$$'));
+    await until(async () => rows().some(x => x[4] === 'cyclist cut in front at the merge $$$' && x[2] === 'Log'));
     await say('scratch that');
     await until(async () => rows().some(x => x[4].startsWith('cyclist') && x[10] === 'TRUE'));
     r = rows();

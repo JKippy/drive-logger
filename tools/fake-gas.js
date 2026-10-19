@@ -11,7 +11,7 @@ function start({ token, scriptPath, id = 'AKfycbFAKEdeploymentID0123456789' } = 
   const src = fs.readFileSync(scriptPath || path.join(__dirname, '..', 'docs', 'sheets-sync.gs'), 'utf8');
   const tmp = path.join(os.tmpdir(), 'dl-fake-gas-' + process.pid + '.gs');
   fs.writeFileSync(tmp, src.replace("'REPLACE-WITH-A-LONG-RANDOM-STRING'", JSON.stringify(token)));
-  const gas = GAS.load(tmp, { preTab: 'Notes', headers: ['Date', 'Time', 'ISO timestamp', 'Type', 'Note', 'Lat', 'Lon', 'Session', 'Note ID', 'Updated', 'Deleted', 'Received'] });
+  const gas = GAS.load(tmp, { preTab: 'Notes', headers: ['Time (cmd+shift+:)', 'Logtime (s)', 'Type', 'Triage Priority', 'Comments', 'Lat', 'Lon', 'Session', 'Note ID', 'Updated', 'Deleted', 'Received'] });
   const echo = new Map(), log = [];
   let mode = 'ok', scriptPort, contentPort;
   const html = (res, code, body) => { res.writeHead(code, { 'content-type': 'text/html; charset=utf-8' }); res.end('<!DOCTYPE html><html><body>' + body + '</body></html>'); };

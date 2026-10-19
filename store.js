@@ -229,7 +229,7 @@
 
   function payload(e) {
     var C = window.DLCore, d = describe(e.note) || {};
-    return { op: e.op, v: e.v, note: e.note, row: C ? C.row(e.note, { gps: true }) : null, session: d.session || '',
+    return { op: e.op, v: e.v, note: e.note, row: C ? C.row(e.note) : null, session: d.session || '',
       updated: C && e.v ? C.isoLocal(new Date(e.v)) : '' };
   }
   /** POST a text/plain JSON body (a CORS "simple request": Apps Script can't answer a preflight) and read the JSON reply,

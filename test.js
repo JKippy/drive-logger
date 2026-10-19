@@ -149,36 +149,58 @@ assert.strictEqual(C.applyCorrections('Cruise car', [{ from: 'cruise car', to: '
 assert.strictEqual(C.applyCorrections('x', [{ from: '', to: 'y' }, null]), 'x');
 ok('corrections: whole-word, case-insensitive, hyphen/space-flexible');
 
-// ---------- export ----------
-const ts = new Date(2026, 9, 17, 14, 3, 22).getTime();
-const notes = [{ ts, type: 'Log', text: 'tab\there "quoted" $$$', lat: 42.4806, lon: -83.4755 }, { ts, type: 'Intervention', text: '"starts quoted' }];
+// ---------- export (Jason's spreadsheet layout) ----------
+const ts = new Date(2026, 9, 17, 14, 3, 22).getTime();   // 2:03:22 PM local
+const notes = [
+  { ts, type: 'Log', text: 'tab\there "quoted" $$$', lat: 42.4806, lon: -83.4755 },
+  { ts: new Date(2026, 9, 17, 10, 43, 25).getTime(), type: 'Intervention', text: 'took over at the light' },
+  { ts: new Date(2026, 9, 17, 12, 1, 5).getTime(), type: 'Log', text: 'merge was smooth $$' },
+  { ts: new Date(2026, 9, 17, 13, 1, 45).getTime(), type: 'Log', text: 'hard braking $' },
+  { ts: new Date(2026, 9, 17, 0, 0, 0).getTime(), type: 'Log', text: 'midnight check' },
+];
+assert.deepStrictEqual(C.HEADER, ['Time (cmd+shift+:)', 'Logtime (s)', 'Type', 'Triage Priority', 'Comments']);
+assert.deepStrictEqual(C.row(notes[0]), ['2:03:22 PM', '', 'Log', '', 'tab\there "quoted" $$$']);
+assert.deepStrictEqual(C.row(notes[1]), ['10:43:25 AM', '', 'I', '', 'took over at the light']);
+assert.deepStrictEqual(C.row(notes[2]), ['12:01:05 PM', '', 'Log', '', 'merge was smooth $$']);
+assert.deepStrictEqual(C.row(notes[3]), ['1:01:45 PM', '', 'Log', '', 'hard braking $']);
+assert.deepStrictEqual(C.row(notes[4]), ['12:00:00 AM', '', 'Log', '', 'midnight check']);
+assert.strictEqual(C.exportType('Intervention'), 'I');
+assert.strictEqual(C.exportType('Log'), 'Log');
 const tsv = C.toTSV(notes, false);
-assert.strictEqual(tsv.split('\n')[0].split('\t').length, 5);
-assert.ok(tsv.split('\n')[0].endsWith('$$$'));
-assert.ok(C.toTSV(notes, true).startsWith('Date\tTime\tISO timestamp\tType\tNote\n'));
-const g = C.toTSV(notes, true, { gps: true }).split('\n');
-assert.strictEqual(g[0], 'Date\tTime\tISO timestamp\tType\tNote\tLat\tLon');
-assert.ok(g[1].endsWith('\t42.480600\t-83.475500'));
-assert.ok(g[2].endsWith('\t\t'));
-assert.ok(C.toCSV(notes).startsWith('Date,Time,ISO timestamp,Type,Note\r\n'));
-assert.ok(C.toCSV(notes, { gps: true }).startsWith('Date,Time,ISO timestamp,Type,Note,Lat,Lon\r\n'));
-ok('export: 5 columns by default, Lat/Lon appended only with GPS on, $ markers inside Note');
+assert.strictEqual(tsv.split('\n')[0], '2:03:22 PM\t\tLog\t\ttab here "quoted" $$$');
+assert.strictEqual(tsv.split('\n')[1], '10:43:25 AM\t\tI\t\ttook over at the light');
+assert.ok(C.toTSV(notes, true).startsWith('Time (cmd+shift+:)\tLogtime (s)\tType\tTriage Priority\tComments\n'));
+assert.ok(!/\tLat\tLon|ISO timestamp/.test(C.toTSV(notes, true)));   // Lat/Lon stay out of Copy/CSV
+const csv = C.toCSV(notes);
+assert.ok(csv.startsWith('Time (cmd+shift+:),Logtime (s),Type,Triage Priority,Comments\r\n'));
+assert.ok(csv.includes('2:03:22 PM,,Log,,"tab\there ""quoted"" $$$"'));  // tab kept inside the quoted CSV field
+assert.ok(csv.includes('10:43:25 AM,,I,,took over at the light'));
+assert.ok(csv.includes('1:01:45 PM,,Log,,hard braking $'));
+ok('export: Jason\'s 5 columns — 12h AM/PM, Log vs I, empty Logtime & Triage Priority, $ markers in Comments, no Lat/Lon');
 assert.strictEqual(C.startsWithKeyword('okay log brake fade'), true);
 assert.strictEqual(C.startsWithKeyword('Okay, so intervention took over'), true);
 assert.strictEqual(C.startsWithKeyword('traffic is heavy log x'), false);
 assert.strictEqual(C.parseCommand('okay'), null);
 ok('fillers before a leading keyword are recognized ("okay log …")');
-// ---------- timestamps: local offset in America/Detroit (EDT -04:00 / EST -05:00) ----------
+// ---------- timestamps: 12-hour AM/PM + ISO offset in America/Detroit ----------
 const tzOut = require('child_process').execFileSync(process.execPath, ['-e', `
   const C = require(${JSON.stringify(__dirname + '/core.js')});
-  const r = d => C.row({ ts: d.getTime(), type: 'Log', text: 'x' });
-  console.log(JSON.stringify([r(new Date(2026, 9, 17, 14, 3, 22)), r(new Date(2027, 0, 15, 9, 0, 0)), r(new Date(Date.UTC(2026, 10, 1, 5, 30, 0)))]));
+  const r = d => ({ row: C.row({ ts: d.getTime(), type: 'Log', text: 'x' }), iso: C.isoLocal(d), clock: C.clock12(d) });
+  console.log(JSON.stringify([
+    r(new Date(2026, 9, 17, 14, 3, 22)),
+    r(new Date(2027, 0, 15, 9, 0, 0)),
+    r(new Date(Date.UTC(2026, 10, 1, 5, 30, 0))),
+    r(new Date(2026, 9, 17, 10, 43, 25)),
+    r(new Date(2026, 9, 17, 12, 1, 5)),
+    r(new Date(2026, 9, 17, 13, 1, 45)),
+  ]));
 `], { env: { ...process.env, TZ: 'America/Detroit' } }).toString();
-const [edt, est, dstEdge] = JSON.parse(tzOut);
-assert.deepStrictEqual(edt.slice(0, 3), ['2026-10-17', '14:03:22', '2026-10-17T14:03:22-04:00']);
-assert.deepStrictEqual(est.slice(0, 3), ['2027-01-15', '09:00:00', '2027-01-15T09:00:00-05:00']);
-assert.deepStrictEqual(dstEdge.slice(0, 3), ['2026-11-01', '01:30:00', '2026-11-01T01:30:00-04:00']);   // 05:30Z, before the 06:00Z fall-back
-ok('ISO timestamps carry the correct America/Detroit offset (EDT -04:00, EST -05:00, DST edge)');
+const [edt, est, dstEdge, am, noon, pm1] = JSON.parse(tzOut);
+assert.strictEqual(edt.row[0], '2:03:22 PM'); assert.strictEqual(edt.iso, '2026-10-17T14:03:22-04:00');
+assert.strictEqual(est.row[0], '9:00:00 AM'); assert.strictEqual(est.iso, '2027-01-15T09:00:00-05:00');
+assert.strictEqual(dstEdge.clock, '1:30:00 AM'); assert.strictEqual(dstEdge.iso, '2026-11-01T01:30:00-04:00');
+assert.deepStrictEqual([am.clock, noon.clock, pm1.clock], ['10:43:25 AM', '12:01:05 PM', '1:01:45 PM']);
+ok('export Time is phone-local 12h AM/PM in America/Detroit (EDT/EST, noon/midnight edges)');
 
 // ---------- persistence (persist.js): dual-store merge, drafts, journal, backup, export tracking ----------
 const P = require('./persist.js');
@@ -322,7 +344,7 @@ const base = () => ({ sessions: [{ id: 's1', name: 'Drive A', start: 1000 }], no
   fs.writeFileSync(tmpGs, src.replace("'REPLACE-WITH-A-LONG-RANDOM-STRING'", "'test-token-123'"));
   const T = 'test-token-123';
   const ev = (id, t, extra, op) => { const n = mk(id, t, extra); return { op: op || 'create', v: n.updatedAt, note: n,
-    row: C.row(n, { gps: true }), session: 'Drive 2026-10-17 11:47', updated: C.isoLocal(new Date(n.updatedAt)) }; };
+    row: C.row(n), session: 'Drive 2026-10-17 11:47', updated: C.isoLocal(new Date(n.updatedAt)) }; };
   let g = GAS.load(tmpGs);
   let r = g.get();
   assert.deepStrictEqual(r.json, { ok: true, app: 'drive-logger-backup', version: 1 }); assert.strictEqual(r.mime, 'application/json');
@@ -336,20 +358,20 @@ const base = () => ({ sessions: [{ id: 's1', name: 'Drive A', start: 1000 }], no
   r = g.post({ token: T, test: true, events: [] });
   assert.deepStrictEqual(r.json, { ok: true, test: true, tab: 'Notes', rows: 0 });
   const sh = g.tab('Notes');
-  const HDR = ['Date', 'Time', 'ISO timestamp', 'Type', 'Note', 'Lat', 'Lon', 'Session', 'Note ID', 'Updated', 'Deleted', 'Received'];
+  const HDR = ['Time (cmd+shift+:)', 'Logtime (s)', 'Type', 'Triage Priority', 'Comments', 'Lat', 'Lon', 'Session', 'Note ID', 'Updated', 'Deleted', 'Received'];
   assert.deepStrictEqual(sh._rows()[0], HDR); assert.strictEqual(sh.getFrozenRows(), 1);
-  assert.deepStrictEqual(Object.keys(sh._fmt).map(Number).sort((a, b) => a - b), [0, 1, 2, 8, 9]);
-  ok('script test ping: creates the Notes tab, 12 headers, frozen row, text format on Date/Time/ISO/ID/Updated');
+  assert.deepStrictEqual(Object.keys(sh._fmt).map(Number).sort((a, b) => a - b), [0, 1, 3, 8, 9]);
+  ok('script test ping: creates the Notes tab, 12 headers, frozen row, text format on Time/Logtime/Triage/ID/Updated');
   const t0 = new Date(2026, 9, 17, 14, 3, 22).getTime();
   r = g.post({ token: T, events: [ev('n1', t0, { lat: 42.5012, lon: -83.4447 }), ev('n2', t0 + 5000, { type: 'Intervention', text: 'took over $$$' })] });
   assert.deepStrictEqual([r.json.ok, r.json.added, r.json.updated], [true, 2, 0]);
   let rows = sh._rows();
   assert.strictEqual(rows.length, 3);
-  assert.deepStrictEqual(rows[1].slice(0, 11), [C.localDate(new Date(t0)), C.localTime(new Date(t0)), C.isoLocal(new Date(t0)), 'Log', 'note n1', 42.5012, -83.4447,
+  assert.deepStrictEqual(rows[1].slice(0, 11), [C.clock12(new Date(t0)), '', 'Log', '', 'note n1', 42.5012, -83.4447,
     'Drive 2026-10-17 11:47', 'n1', C.isoLocal(new Date(t0)), '']);
   assert.ok(rows[1][11] instanceof Date);
-  assert.strictEqual(rows[2][4], 'took over $$$');
-  ok('script upsert: new notes appended in one block, mapped to the export columns + Session/ID/Updated/Received');
+  assert.strictEqual(rows[2][2], 'I'); assert.strictEqual(rows[2][4], 'took over $$$');
+  ok('script upsert: new notes appended in one block, mapped to Jason\'s export columns + Lat/Lon + Session/ID/Updated/Received');
   r = g.post({ token: T, events: [ev('n1', t0, { lat: 42.5012, lon: -83.4447 }), ev('n2', t0 + 5000, { type: 'Intervention', text: 'took over $$$' })] });
   assert.deepStrictEqual([r.json.added, r.json.updated, sh._rows().length], [0, 2, 3]);
   ok('script upsert: re-sending the same notes (retry) updates in place, never duplicates');
@@ -370,12 +392,13 @@ const base = () => ({ sessions: [{ id: 's1', name: 'Drive A', start: 1000 }], no
   assert.strictEqual(g.locks.held, 0); assert.ok(g.locks.taken >= 8);
   ok('script: 120-note batch in one call; the script lock is always released');
   // Jason's own layout later: reordered columns, an extra column of his own, some headers missing
-  g = GAS.load(tmpGs, { preTab: 'Notes', headers: ['Note ID', 'My comments', 'Type', 'Date', 'Note'] });
-  g.tab('Notes').getRange(2, 1, 1, 5).setValues([['n1', 'keep me', 'Log', 'old', 'old']]);
+  g = GAS.load(tmpGs, { preTab: 'Notes', headers: ['Note ID', 'My comments', 'Type', 'Comments'] });
+  g.tab('Notes').getRange(2, 1, 1, 4).setValues([['n1', 'keep me', 'Log', 'old']]);
   r = g.post({ token: T, events: [ev('n1', t0), ev('n9', t0 + 1)] });
   rows = g.tab('Notes')._rows();
-  assert.deepStrictEqual(rows[0].slice(0, 6), ['Note ID', 'My comments', 'Type', 'Date', 'Note', 'Time']);
-  assert.deepStrictEqual(rows[1].slice(0, 5), ['n1', 'keep me', 'Log', C.localDate(new Date(t0)), 'note n1']);
+  assert.deepStrictEqual(rows[0].slice(0, 5), ['Note ID', 'My comments', 'Type', 'Comments', 'Time (cmd+shift+:)']);
+  assert.deepStrictEqual(rows[1].slice(0, 4), ['n1', 'keep me', 'Log', 'note n1']);
+  assert.strictEqual(rows[1][4], C.clock12(new Date(t0)));
   assert.deepStrictEqual([rows.length, rows[2][0], rows[2][1]], [3, 'n9', '']);
   ok('script: columns found by header name; custom layout + extra user columns preserved; missing headers appended');
 }

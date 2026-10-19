@@ -258,7 +258,9 @@
     return { commands: commands, notes: notes };
   }
 
-  // ---------------- export ----------------
+  // ---------------- export (Jason's spreadsheet layout) ----------------
+  // Time (cmd+shift+:) · Logtime (s) · Type · Triage Priority · Comments
+  // Logtime and Triage Priority are left empty for later fill-in. Priority markers stay inside Comments.
   function pad(n) { return (n < 10 ? '0' : '') + n; }
   function localDate(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
   function localTime(d) { return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); }
@@ -267,13 +269,18 @@
     off = Math.abs(off);
     return localDate(d) + 'T' + localTime(d) + sign + pad(Math.floor(off / 60)) + ':' + pad(off % 60);
   }
-  var HEADER = ['Date', 'Time', 'ISO timestamp', 'Type', 'Note'];
-  function header(opts) { return opts && opts.gps ? HEADER.concat(['Lat', 'Lon']) : HEADER.slice(); }
-  function row(note, opts) {
-    var d = new Date(note.ts);
-    var r = [localDate(d), localTime(d), isoLocal(d), note.type, note.text || ''];
-    if (opts && opts.gps) r.push(note.lat != null ? note.lat.toFixed(6) : '', note.lon != null ? note.lon.toFixed(6) : '');
-    return r;
+  /** 12-hour clock with AM/PM, no leading zero on the hour: "10:43:25 AM", "1:01:45 PM". Phone-local time. */
+  function clock12(d) {
+    var h = d.getHours(), m = pad(d.getMinutes()), s = pad(d.getSeconds()), ap = h >= 12 ? 'PM' : 'AM';
+    h = h % 12; if (!h) h = 12;
+    return h + ':' + m + ':' + s + ' ' + ap;
+  }
+  /** Spreadsheet Type column: "Log" or "I" (Intervention). */
+  function exportType(type) { return type === 'Intervention' ? 'I' : 'Log'; }
+  var HEADER = ['Time (cmd+shift+:)', 'Logtime (s)', 'Type', 'Triage Priority', 'Comments'];
+  function header() { return HEADER.slice(); }
+  function row(note) {
+    return [clock12(new Date(note.ts)), '', exportType(note.type), '', note.text || ''];
   }
   function tsvField(v) {
     v = String(v).replace(/[\t\r\n]+/g, ' ');
@@ -298,6 +305,7 @@
     amendText: amendText, PLACEHOLDER: PLACEHOLDER, norm: norm,
     fixKeywords: fixKeywords, keywordsIn: keywordsIn, startsWithKeyword: startsWithKeyword, chooseAlternative: chooseAlternative, applyCorrections: applyCorrections,
     DEFAULT_CORRECTIONS: DEFAULT_CORRECTIONS,
-    toTSV: toTSV, toCSV: toCSV, row: row, header: header, localDate: localDate, localTime: localTime, isoLocal: isoLocal, HEADER: HEADER };
+    toTSV: toTSV, toCSV: toCSV, row: row, header: header, localDate: localDate, localTime: localTime, isoLocal: isoLocal,
+    clock12: clock12, exportType: exportType, HEADER: HEADER };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.DLCore = api;
 })(this);

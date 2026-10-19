@@ -102,9 +102,9 @@ through a small Apps Script web app bound to that sheet ([`docs/sheets-sync.gs`]
 - The status row shows a small cloud: grey when synced, amber with a count while notes are waiting, and red with "!" on errors.
   More › Sheets backup shows *Last synced HH:MM:SS · N pending* and the last error. **Send test** checks the URL, access and
   token; **Sync now** retries immediately.
-- **Columns** (in one `COLUMNS` table in the script): Date, Time, ISO timestamp, Type, Note, Lat, Lon (the export columns),
-  then Session, Note ID, Updated, Deleted, Received. Columns are matched by header name, so you can reorder them or add your
-  own; missing headers are appended.
+- **Columns** (in one `COLUMNS` table in the script): Time (cmd+shift+:), Logtime (s), Type, Triage Priority, Comments
+  (the export columns), then Lat, Lon, Session, Note ID, Updated, Deleted, Received. Columns are matched by header name,
+  so you can reorder them or add your own; missing headers are appended.
 
 **Why text/plain:** Apps Script can't answer a CORS preflight (there is no `doOptions`), so the app POSTs a `text/plain` JSON
 body. That's a "simple request": the `/exec` 302 (which carries `Access-Control-Allow-Origin: *`) is followed to
@@ -119,16 +119,19 @@ bound to. Rotate the token by changing `TOKEN`, redeploying (*Manage deployments
 is stored in your Google account, so check that's allowed for test-drive data.
 
 ## Export format
-Tab-separated (Copy) or CSV (Download / Share). Header row optional for Copy, always included in the CSV.
+Tab-separated (Copy) or CSV (Download / Share). Exact columns for Jason's spreadsheet:
 
-| Date | Time | ISO timestamp | Type | Note | Lat | Lon |
-| --- | --- | --- | --- | --- | --- | --- |
-| 2026-10-17 | 14:03:22 | 2026-10-17T14:03:22-04:00 | Intervention | took over at the light $$$ | 42.501220 | -83.444760 |
+| Time (cmd+shift+:) | Logtime (s) | Type | Triage Priority | Comments |
+| --- | --- | --- | --- | --- |
+| 2:03:22 PM |  | Log |  | left lane drift near exit 12 |
+| 10:43:25 AM |  | I |  | took over at the light $$$ |
 
-- Time is the phone's local time; the ISO timestamp includes the local UTC offset (EDT −04:00 / EST −05:00).
-- Priority is kept inside the note text: `$$$` high, `$$` medium, `$` low.
-- **Lat/Lon** are added as the last two columns only while GPS is on (default). They're blank when location is denied,
-  unavailable, or older than 30 s. With GPS off the export is the original 5 columns.
+- **Time** is the phone's local clock in 12-hour AM/PM form, no leading zero on the hour (`1:01:45 PM`, `12:01:05 PM`).
+- **Logtime (s)** and **Triage Priority** are left empty — filled in later during triage.
+- **Type** is `Log` or `I` (intervention).
+- **Comments** is the note text; priority markers stay here: `$$$` high, `$$` medium, `$` low.
+- Header row is optional for Copy (checkbox in More) and always included in Download CSV / Share.
+- GPS coordinates stay on each note (and in the Sheets backup) but are **not** in Copy/CSV.
 
 ### Timestamps
 A note's time is the phone clock at the moment the recognizer first reported the keyword (or the start of the

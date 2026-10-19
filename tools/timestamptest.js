@@ -17,7 +17,7 @@ const assert = require('assert');
   await p.goto(BASE);
   await p.click('#micBtn'); await p.waitForTimeout(150);
   const last = () => p.evaluate(() => { const n = JSON.parse(localStorage.getItem('driveLogger.v1')).notes; const x = n[n.length-1];
-    return { ts: x.ts, text: x.text, iso: DLCore.row(x)[2], time: DLCore.row(x)[1] }; });
+    return { ts: x.ts, text: x.text, type: x.type, iso: DLCore.isoLocal(new Date(x.ts)), time: DLCore.clock12(new Date(x.ts)), row: DLCore.row(x) }; });
   const say = (t, f) => p.evaluate(([t, f]) => __say(t, f), [t, f]);
 
   // A: keyword opens the utterance; recognizer shows "okay" first, the keyword 700 ms later
@@ -25,7 +25,8 @@ const assert = require('assert');
   const t1 = await say('okay log brake fade on the downhill', false); await p.waitForTimeout(600);
   await say('okay log brake fade on the downhill', true); await p.waitForTimeout(800);
   let n = await last();
-  console.log(`A  leading keyword: note.ts - first words = ${n.ts - t0} ms, keyword appeared at +${t1 - t0} ms → ${n.time}  ${n.iso}`);
+  console.log(`A  leading keyword: note.ts - first words = ${n.ts - t0} ms, keyword appeared at +${t1 - t0} ms → ${n.time}  ${n.iso}  export=${JSON.stringify(n.row)}`);
+  assert.deepStrictEqual(n.row, [n.time, '', 'Log', '', n.text]);
   assert.ok(Math.abs(n.ts - t0) < 30, 'stamped at utterance start');
   assert.ok(/-04:00$/.test(n.iso));
 
@@ -35,6 +36,7 @@ const assert = require('assert');
   await say('traffic is heavy here intervention took over at the merge', true); await p.waitForTimeout(800);
   n = await last();
   console.log(`B  mid-utterance keyword: note.ts - keyword appeared = ${n.ts - t3} ms (utterance began ${t3 - t2} ms earlier) → ${n.time}  ${n.iso}`);
+  assert.deepStrictEqual(n.row.slice(0, 4), [n.time, '', 'I', '']);
   assert.ok(Math.abs(n.ts - t3) < 30);
 
   // C: on-screen "Now" clock uses the same clock/format as note times

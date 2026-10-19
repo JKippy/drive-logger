@@ -1,5 +1,5 @@
 // Network-first service worker: always fresh when online, cached copy when offline.
-const CACHE = 'drive-logger-v8';
+const CACHE = 'drive-logger-v9';
 const ASSETS = ['./', 'index.html', 'style.css', 'core.js', 'persist.js', 'store.js', 'app.js', 'manifest.json', 'icons/icon-192.png', 'icons/apple-touch-icon.png', 'nosleep.mp4'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).catch(() => {})); self.skipWaiting(); });
 self.addEventListener('activate', e => e.waitUntil(

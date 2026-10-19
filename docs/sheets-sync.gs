@@ -8,7 +8,7 @@
  *
  * The app POSTs batches of note changes as a text/plain JSON body (no CORS preflight):
  *   { token, test?: true, events: [{ op, v, note: {id, ts, type, text, lat, lon, session, deleted, …},
- *                                    row: [Date, Time, ISO timestamp, Type, Note, Lat, Lon], session, updated }] }
+ *                                    row: [Time (cmd+shift+:), Logtime (s), Type, Triage Priority, Comments], session, updated }] }
  * Each note is upserted by its Note ID under a script lock, so retries and re-sends never duplicate rows.
  * GET returns a health check with no data.
  */
@@ -21,22 +21,23 @@ const VERSION_HEADER = 'Updated'; // an older version of a note never overwrites
 // ---------- Column mapping: the ONLY place to change the sheet layout ----------
 // [header, value(note, event)] in column order. Columns are found by header name, so you can reorder columns in the
 // sheet or add your own columns: the script only writes the cells for the headers listed here.
-// event.row is the app's export row: [Date, Time, ISO timestamp, Type, Note, Lat, Lon].
+// event.row is the app's Copy/CSV export row (5 columns). Lat/Lon and internal columns come from the note.
+// Change the layout here only: columns are matched by header name, so reordering the sheet is fine.
 const COLUMNS = [
-  ['Date',          (n, ev) => ev.row[0]],
-  ['Time',          (n, ev) => ev.row[1]],
-  ['ISO timestamp', (n, ev) => ev.row[2]],
-  ['Type',          (n, ev) => n.type || ''],
-  ['Note',          (n, ev) => n.text || ''],
-  ['Lat',           (n, ev) => (n.lat == null ? '' : n.lat)],
-  ['Lon',           (n, ev) => (n.lon == null ? '' : n.lon)],
-  ['Session',       (n, ev) => ev.session || n.session || ''],
-  ['Note ID',       (n, ev) => n.id],
-  ['Updated',       (n, ev) => ev.updated || ''],
-  ['Deleted',       (n, ev) => (n.deleted ? 'TRUE' : '')],
-  ['Received',      (n, ev) => new Date()],
+  ['Time (cmd+shift+:)', (n, ev) => (ev.row && ev.row[0]) || ''],
+  ['Logtime (s)',        (n, ev) => (ev.row && ev.row[1]) || ''],   // left empty for Jason to fill later
+  ['Type',               (n, ev) => (ev.row && ev.row[2]) || (n.type === 'Intervention' ? 'I' : 'Log')],
+  ['Triage Priority',    (n, ev) => (ev.row && ev.row[3]) || ''],   // left empty; $ / $$ / $$$ stay in Comments
+  ['Comments',           (n, ev) => (ev.row && ev.row[4] != null ? ev.row[4] : (n.text || ''))],
+  ['Lat',                (n, ev) => (n.lat == null ? '' : n.lat)],
+  ['Lon',                (n, ev) => (n.lon == null ? '' : n.lon)],
+  ['Session',            (n, ev) => ev.session || n.session || ''],
+  ['Note ID',            (n, ev) => n.id],
+  ['Updated',            (n, ev) => ev.updated || ''],
+  ['Deleted',            (n, ev) => (n.deleted ? 'TRUE' : '')],
+  ['Received',           (n, ev) => new Date()],
 ];
-const TEXT_HEADERS = ['Date', 'Time', 'ISO timestamp', 'Note ID', 'Updated'];   // kept as plain text (no auto-dates)
+const TEXT_HEADERS = ['Time (cmd+shift+:)', 'Logtime (s)', 'Triage Priority', 'Note ID', 'Updated'];   // plain text (no auto-dates)
 
 function doGet() {
   return json_({ ok: true, app: 'drive-logger-backup', version: 1 });           // health check only, no data
